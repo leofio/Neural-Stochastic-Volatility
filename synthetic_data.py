@@ -37,11 +37,11 @@ class SVMonteCarlo:
     self.data_type = torch.float32
 
   def exact_alpha(self, K, T, v):
-    result = torch.tensor([1.5]) * (torch.tensor([0.5]) - v)
+    result = v * (torch.tensor(1.0) - torch.tensor(10.0) * v)
     return result
 
   def exact_beta(self, K, T, v):
-    return torch.tensor([0.7])
+    return torch.tensor(2.0) * v**(1.5)
 
   def perform_monte_carlo(self, vol):
     t_all = torch.reshape(torch.tensor(np.linspace(0, (self.N_t*self.dt).item(), self.N_t), dtype=self.data_type).to(self.device), (-1,1))
@@ -80,37 +80,45 @@ class SVMonteCarlo:
     plt.show()
     plt.close()
 
-  def synthetic_data(self):
+  def synthetic_data(self, S_matrix, vol):
+    step = max(1, 120 // self.t_samples)
+    time_indices = list(range(30, self.N_t, step))
     times = self.t_all[30::(120 // self.t_samples)].squeeze().tolist()
     strikes = np.linspace(500, 2000, self.k_samples)
     rows = []
-    for vol in v_samples:
-      S_times = self.paths[vol][30::(120 // self.t_samples)].squeeze().tolist()
-      for idx in range(len(times)):
-        S = S_times[idx]
-        t = times[idx]
-        for strike in strikes:
-          price = np.exp(-self.r.item() * t) * np.maximum(S - strike, 0)
-          row = [strike, t, vol, price]
-          rows.append(row)
-    self.df = pd.DataFrame(rows, columns=['Strike', 'Time', 'Volatility', 'Price'])
-    return self.df
+
+    for i, t_idx in enumerate(time_indices):
+      time = times[i]
+
+      S_at_t = S_matrix[t_idx, :].cpu().numpy()
+
+      for strike in strikes:
+        payoff = np.maximum(S_at_t - strike, 0)
+        exp_payoff = np.mean(payoff)
+        price = np.exp(-self.r * time) * exp_payoff
+        rows.append([strike, time, vol, price.item()])
+
+    return rows
 
   def run(self):
-    S_list, v_list, self.t_all = self.perform_monte_carlo(self.v_samples[0])
-    self.S_matrix = torch.cat(S_list, dim=0)
-    self.v_matrix = torch.cat(v_list, dim=0)
+    all_data_rows = []
 
-    self.paths = {}
-    self.paths[self.v_samples[0]] = torch.mean(self.S_matrix, dim=1)
-    for vol in self.v_samples[1:]:
-      S, v, t = self.perform_monte_carlo(vol)
-      S_mat = torch.cat(S, dim=0)
-      S_av = torch.mean(S_mat, dim=1)
-      self.paths[vol] = S_av
+    print(f'Starting simulation with {self.M} paths...')
 
-    self.plot_asset_trajectories()
-    self.plot_volatility_trajectories()
-    self.synthetic_data()
-    print(self.df)
+    for i, vol in enumerate(self.v_samples):
+      S_list, v_list, self.t_all = self.perform_monte_carlo(vol)
+      S_matrix = torch.cat(S_list, dim=0)
+
+      if i==0:
+        self.S_matrix = S_matrix
+        self.v_matrix = torch.cat(v_list, dim=0)
+        self.plot_asset_trajectories()
+        self.plot_volatility_trajectories()
+
+      data_rows = self.synthetic_data(S_matrix, vol)
+      all_data_rows.extend(data_rows)
+
+    self.df = pd.DataFrame(all_data_rows, columns=['Strike', 'Time', 'Volatility', 'Price'])
+    print("Synthetic data generation complete.")
+    print(self.df.head())
     return
