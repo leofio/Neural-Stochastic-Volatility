@@ -25,7 +25,7 @@ class NN_Call(nn.Module):
         self.layers = nn.Sequential(*layers)
 
     def forward(self, x):
-      return nn.functional.softplus(self.layers(x))
+      return F.softplus(self.layers(x))
 
 class NetAlpha(nn.Module):
     def __init__(self, nn_params):
@@ -44,8 +44,11 @@ class NetAlpha(nn.Module):
         layers.append(nn.Linear(neurons_per_layer[-1], output_size))
         self.layers = nn.Sequential(*layers)
 
+        for m in self.modules():
+          if isinstance(m, nn.Linear):
+              nn.init.constant_(m.bias, 0)
+
     def forward(self, x):
-        # Removed F.softplus to allow negative outputs for alpha
         return self.layers(x)
 
 class NetBeta(nn.Module):
@@ -66,4 +69,4 @@ class NetBeta(nn.Module):
         self.layers = nn.Sequential(*layers)
 
     def forward(self, x):
-        return F.softplus(self.layers(x))
+        return self.layers(x)
