@@ -5,7 +5,7 @@ A neural network implementation for calibrating stochastic volatility models usi
 * **synthetic_data.py** : Implements Monte Carlo simulation to generate synthetic option price data for model testing
 * **datasets.py** : Datasets class for model training
 * **nets.py** : Defines network architecure for learning dynamics
-* **trainer.py** : Handles training logic. Manages optimization and loss tracking
+* **trainer.py** : Handles training logic. Manages optimization and loss tracking. Implements a dual training procedure in which the solution surface is initially fit simultaneously with the unknown $\alpha_{S_t,\nu,t}$ and $\beta_{S_t,\nu,t}$, once the solution surface has been fit sufficently well, training switches to optimizing $\alpha_{S_t,\nu,t}$ and $\beta_{S_t,\nu,t}$ to this surface.
 
 ## Project overview
 Inspired by the work of Wang et al. [2025] on Deep self-consistent learning of local volatility, this repository extends that approach to Stochastic Volatility (SV) models. This requires handling additional latent parameters and more complex state dynamics in the synthetic data generation phase. Similarly, I used physics informed neural networks (PINNs) to learn a consistent pricing surface and the underlying asset and volatility dynamics.
