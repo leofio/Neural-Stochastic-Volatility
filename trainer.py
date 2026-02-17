@@ -15,8 +15,8 @@ class TrainSV():
     self.df = df
     self.lambda_data = loss_weights[0]
     self.lambda_arb = loss_weights[1]
-    self.lambda_bound = loss_weights[3]
     self.lambda_pde = loss_weights[2]
+    self.lambda_bound = loss_weights[3]
     self.lambda_reg = loss_weights[4]
     self.use_adaptive_loss_weights = use_adaptive_loss_weights
     self.num_epochs = num_epochs
@@ -50,12 +50,13 @@ class TrainSV():
     self.learning_rate = learning_rate
 
     self.optimizer_NN_call_Adam = torch.optim.Adam(self.NN_call.parameters(), lr=self.learning_rate)
+    self.optimizer_NN_call_Adam_data = torch.optim.Adam(self.NN_call.parameters(), lr=self.learning_rate)
 
     self.optimizer_NN_alpha_Adam_phase_1 = torch.optim.Adam(self.NN_alpha.parameters(), lr= 5 * self.learning_rate)
     self.optimizer_NN_beta_Adam_phase_1 = torch.optim.Adam(self.NN_beta.parameters(), lr= 5 * self.learning_rate)
 
-    self.optimizer_NN_alpha_Adam_phase_2 = torch.optim.Adam(self.NN_alpha.parameters(), lr= self.learning_rate)
-    self.optimizer_NN_beta_Adam_phase_2 = torch.optim.Adam(self.NN_beta.parameters(), lr= self.learning_rate)
+    self.optimizer_NN_alpha_Adam_phase_2 = torch.optim.Adam(self.NN_alpha.parameters(), lr= 10 * self.learning_rate)
+    self.optimizer_NN_beta_Adam_phase_2 = torch.optim.Adam(self.NN_beta.parameters(), lr= 10 * self.learning_rate)
 
     self.use_LBFGS = use_LBFGS
 
@@ -74,19 +75,20 @@ class TrainSV():
       self.sched_beta_phase_2  = torch.optim.lr_scheduler.ReduceLROnPlateau(self.optimizer_NN_beta_Adam_phase_2, mode='min', patience=1000)
 
       self.sched_call  = torch.optim.lr_scheduler.ReduceLROnPlateau(self.optimizer_NN_call_Adam, mode='min', patience=1000)
+      self.sched_call_data  = torch.optim.lr_scheduler.ReduceLROnPlateau(self.optimizer_NN_call_Adam_data, mode='min', patience=1000)
 
   def call(self, x):
     # x = u, t, v
     return self.NN_call(x)
 
   def true_alpha(self, x):
-    #result = torch.tensor(1.5) * (torch.tensor(0.5) - x[:, 2])
-    result = x[:, 2] * (torch.tensor(1.0) - torch.tensor(10.0) * x[:, 2])
+    result = torch.tensor(1.5) * (torch.tensor(0.5) - x[:, 2])
+    #result = x[:, 2] * (torch.tensor(1.0) - torch.tensor(10.0) * x[:, 2])
     return result
 
   def true_beta(self, x):
-    #result = torch.tensor(0.7)
-    result = torch.tensor(2.0) * x[: ,2]**(1.5)
+    result = torch.tensor(0.7)
+    #result = torch.tensor(2.0) * x[: ,2]**(1.5)
     return result
 
   def loss_data(self):
@@ -127,11 +129,8 @@ class TrainSV():
 
   def loss_bound_flow(self):
     v_zeros = torch.zeros((128,1), dtype = torch.float32, requires_grad = True).to(self.device)
-    u_rand = -self.u_min * torch.rand((128,1), dtype = torch.float32, device = self.device) + self.u_min
-    t_rand = torch.rand((128,1), dtype = torch.float32, device = self.device)
-
-    t_rand.requires_grad = True
-    u_rand.requires_grad = True
+    u_rand = -self.u_min * torch.rand((128,1), dtype = torch.float32, device = self.device, requires_grad=True) + self.u_min
+    t_rand = torch.rand((128,1), dtype = torch.float32, device = self.device, requires_grad= True)
 
     x_rand_v0 = torch.cat((u_rand, t_rand, v_zeros), dim = 1)
 
@@ -394,6 +393,19 @@ class TrainSV():
 
     return loss_bound.item(), loss_pde.item()
 
+  def train_step_adam_data(self):
+    self.optimizer_NN_call_Adam_data.zero_grad()
+    loss_data = self.loss_data()
+    loss_data.backward()
+
+    self.optimizer_NN_call_Adam_data.step()
+
+    if self.use_scheduler:
+      self.sched_call_data.step(loss_data.item())
+
+    return loss_data.item()
+
+
   def train_step_LBFGS(self, skip_call):
 
     logs = {}
@@ -505,18 +517,320 @@ class TrainSV():
 
     return logs
 
-  def run(self, single_phase = True):
+  def train_single_phase(self):
+    for epoch in range(self.num_epochs):
+      if (epoch + 1) % 100 == 0:
+        update_weights = True
+      else:
+        update_weights = False
 
-    exact_alpha = self.true_alpha(self.dataset_unscaled.x)
-    exact_beta = self.true_beta(self.dataset_unscaled.x)
+      if epoch / self.num_epochs < 0.9 or not self.use_LBFGS:
+          loss_data, loss_bound, loss_pde, loss_arb, loss_reg, loss_call = self.train_step_adam(update_weights)
+      else:
+        logs = self.train_step_LBFGS(skip_call = False)
+        loss_data = logs['loss_call_data']
+        loss_bound = logs['loss_call_bound']
+        loss_pde = logs['loss_call_pde']
+        loss_arb = logs['loss_call_arb']
+        loss_call = logs['loss_call_total']
 
-    best_alpha_error = float('inf')
-    best_beta_error = float('inf')
-    best_call_loss = float('inf')
-    best_epoch = 0
-    model_alpha_save_path = "best_model_alpha.pth"
-    model_beta_save_path = "best_model_beta.pth"
-    model_call_save_path = "best_model_call.pth"
+      if np.isnan(loss_call).any():
+        print(f'Nan detected at epoch {epoch+1}')
+        break
+
+      self.data_losses.append(loss_data)
+      self.bound_losses.append(loss_bound)
+      self.pde_losses.append(loss_pde)
+      self.arb_losses.append(loss_arb)
+      self.reg_losses.append(loss_reg)
+      self.call_losses.append(loss_call)
+
+      alpha_pred = self.NN_alpha(self.dataset.x)
+      beta_pred = self.NN_beta(self.dataset.x)
+
+      alpha_error = torch.mean(torch.abs(alpha_pred - self.exact_alpha) / torch.abs(self.exact_alpha + 1e-8))
+      beta_error = torch.mean(torch.abs(beta_pred - self.exact_beta) / torch.abs(self.exact_beta + 1e-8))
+      alpha_beta_error = torch.maximum(alpha_error, beta_error)
+
+      self.alpha_errors.append(alpha_error.item())
+      self.beta_errors.append(beta_error.item())
+
+      if (epoch+1) % 100 == 0:
+        print(f'Epoch {epoch+1}')
+
+        print(f'Data loss, {loss_data}')
+        print(f'PDE loss, {loss_pde}')
+        print(f'Arbitrage loss, {loss_arb}')
+        print(f'Boundary loss, {loss_bound}')
+        print(f'Alpha error, {alpha_error}')
+        print(f'Beta error, {beta_error}')
+        print('--------------------------------------')
+
+      if loss_call < self.best_call_loss:
+        self.best_call_loss = loss_call
+        self.best_alpha_error = alpha_error
+        self.best_beta_error = beta_error
+        best_alpha_beta_error = alpha_beta_error
+        self.best_epoch = epoch
+        torch.save(self.NN_alpha.state_dict(), self.model_alpha_save_path)
+        torch.save(self.NN_beta.state_dict(), self.model_beta_save_path)
+        torch.save(self.NN_call.state_dict(), self.model_call_save_path)
+
+  def train_dual_phase_I(self):
+    update_weights = False
+    loss_data, loss_bound, loss_pde, loss_arb, loss_reg, loss_call = self.train_step_adam(update_weights)
+
+    self.data_losses.append(loss_data)
+    self.bound_losses.append(loss_bound)
+    self.pde_losses.append(loss_pde)
+    self.arb_losses.append(loss_arb)
+    self.reg_losses.append(loss_reg)
+    self.call_losses.append(loss_call)
+
+    epoch_number = 1
+    while loss_data > self.tol:
+      if epoch_number > int(self.num_epochs / 2):
+        print(f'Switched to phase two after {self.num_epochs / 2} epochs')
+        break
+      if epoch_number % 100 == 0:
+        update_weights = True
+      else:
+        update_weights = False
+
+      loss_data, loss_bound, loss_pde, loss_arb, loss_reg, loss_call = self.train_step_adam(update_weights)
+      epoch_number += 1
+
+      if np.isnan(loss_call).any():
+        print(f'Nan detected at epoch {epoch_number}')
+        break
+
+      self.data_losses.append(loss_data)
+      self.bound_losses.append(loss_bound)
+      self.pde_losses.append(loss_pde)
+      self.arb_losses.append(loss_arb)
+      self.reg_losses.append(loss_reg)
+      self.call_losses.append(loss_call)
+
+      alpha_pred = self.NN_alpha(self.dataset.x)
+      beta_pred = self.NN_beta(self.dataset.x)
+
+      alpha_error = torch.mean(torch.abs(alpha_pred - self.exact_alpha) / torch.abs(self.exact_alpha + 1e-8))
+      beta_error = torch.mean(torch.abs(beta_pred - self.exact_beta) / torch.abs(self.exact_beta + 1e-8))
+      self.alpha_errors.append(alpha_error.item())
+      self.beta_errors.append(beta_error.item())
+
+      if (epoch_number) % 100 == 0:
+        print(f'Epoch {epoch_number}')
+
+        print(f'Data loss, {loss_data}')
+        print(f'PDE loss, {loss_pde}')
+        print(f'Arbitrage loss, {loss_arb}')
+        print(f'Boundary loss, {loss_bound}')
+        print(f'Alpha error, {alpha_error}')
+        print(f'Beta error, {beta_error}')
+        print('--------------------------------------')
+
+      if loss_call < self.best_call_loss:
+        self.best_call_loss = loss_call
+        self.best_alpha_error = alpha_error
+        self.best_beta_error = beta_error
+        self.best_epoch = epoch_number
+        torch.save(self.NN_alpha.state_dict(), self.model_alpha_save_path)
+        torch.save(self.NN_beta.state_dict(), self.model_beta_save_path)
+        torch.save(self.NN_call.state_dict(), self.model_call_save_path)
+
+    print(f'Switched phase after {epoch_number} epochs')
+
+    phase1_duration = epoch_number
+
+    for epoch in range(int(self.num_epochs / 2)):
+      current_epoch = phase1_duration + epoch
+      if (epoch + 1) % 100 == 0:
+        update_weights = True
+      else:
+        update_weights = False
+
+      loss_flow, loss_pde = self.train_step_adam_alpha_beta_only(update_weights)
+
+      loss_bound = self.loss_bound()
+
+      if loss_bound.isnan().any() or np.isnan(loss_pde):
+        print(f'Nan detected at epoch {epoch+1} in second phase')
+        break
+
+      self.bound_losses.append(loss_bound.item())
+      self.pde_losses.append(loss_pde)
+      self.data_losses.append(loss_data)
+      self.arb_losses.append(loss_arb)
+
+      if self.use_adaptive_loss_weights:
+        loss_call = (
+            self.w_data_call * loss_data +
+            self.w_arb_call * loss_arb +
+            self.w_pde_call * loss_pde +
+            self.w_bound_call * loss_bound.item()
+        )
+      else:
+        loss_call = (
+            self.lambda_data * loss_data +
+            self.lambda_arb * loss_arb +
+            self.lambda_pde * loss_pde +
+            self.lambda_bound * loss_bound.item()
+            )
+
+      self.call_losses.append(loss_call.item())
+
+
+      alpha_pred = self.NN_alpha(self.dataset.x)
+      beta_pred = self.NN_beta(self.dataset.x)
+
+      alpha_error = torch.mean(torch.abs(alpha_pred - self.exact_alpha) / torch.abs(self.exact_alpha))
+      beta_error = torch.mean(torch.abs(beta_pred - self.exact_beta) / self.exact_beta)
+      self.alpha_errors.append(alpha_error.item())
+      self.beta_errors.append(beta_error.item())
+
+      if (epoch+1) % 1000 == 0:
+        print(f'Epoch {epoch+1}')
+
+        print(f'PDE loss, {loss_pde}')
+        print(f'Boundary loss, {loss_bound.item()}')
+        print(f'Alpha error, {alpha_error}')
+        print(f'Beta error, {beta_error}')
+        print('--------------------------------------')
+
+      if loss_call < self.best_call_loss:
+        self.best_call_loss = loss_call
+        self.best_alpha_error = alpha_error
+        self.best_beta_error = beta_error
+        self.best_epoch = current_epoch
+        torch.save(self.NN_alpha.state_dict(), self.model_alpha_save_path)
+        torch.save(self.NN_beta.state_dict(), self.model_beta_save_path)
+        torch.save(self.NN_call.state_dict(), self.model_call_save_path)
+
+  def train_dual_phase_II(self):
+    update_weights = False
+    loss_data = self.train_step_adam_data()
+
+    self.data_losses.append(loss_data)
+    self.bound_losses.append(1)
+    self.pde_losses.append(1)
+    self.arb_losses.append(0)
+    self.reg_losses.append(1)
+    self.call_losses.append(1)
+
+    epoch_number = 1
+
+    while loss_data > self.tol:
+      if epoch_number > int(self.num_epochs / 2):
+        print(f'Switched to phase two after {self.num_epochs / 2} epochs')
+        break
+
+      loss_data = self.train_step_adam_data()
+      epoch_number += 1
+
+      if np.isnan(loss_data).any():
+        print(f'Nan detected at epoch {epoch_number}')
+        break
+
+      self.data_losses.append(loss_data)
+      self.bound_losses.append(1)
+      self.pde_losses.append(1)
+      self.arb_losses.append(0)
+      self.reg_losses.append(1)
+      self.call_losses.append(1)
+
+      alpha_pred = self.NN_alpha(self.dataset.x)
+      beta_pred = self.NN_beta(self.dataset.x)
+
+      alpha_error = torch.mean(torch.abs(alpha_pred - self.exact_alpha) / torch.abs(self.exact_alpha + 1e-8))
+      beta_error = torch.mean(torch.abs(beta_pred - self.exact_beta) / torch.abs(self.exact_beta + 1e-8))
+      self.alpha_errors.append(alpha_error.item())
+      self.beta_errors.append(beta_error.item())
+
+      if (epoch_number) % 100 == 0:
+        print(f'Epoch {epoch_number}')
+
+        print(f'Data loss, {loss_data}')
+        print('--------------------------------------')
+
+    print(f'Switched phase after {epoch_number} epochs')
+
+    phase1_duration = epoch_number
+
+    for epoch in range(int(self.num_epochs / 2)):
+      current_epoch = phase1_duration + epoch
+      if (epoch + 1) % 100 == 0:
+        update_weights = True
+      else:
+        update_weights = False
+
+      loss_flow, loss_pde = self.train_step_adam_alpha_beta_only(update_weights)
+
+      loss_bound = self.loss_bound()
+
+      if loss_bound.isnan().any() or np.isnan(loss_pde):
+        print(f'Nan detected at epoch {epoch+1} in second phase')
+        break
+
+      self.bound_losses.append(loss_bound.item())
+      self.pde_losses.append(loss_pde)
+      self.data_losses.append(loss_data)
+      self.arb_losses.append(0)
+
+      if self.use_adaptive_loss_weights:
+        loss_call = (
+            self.w_data_call * loss_data +
+            self.w_pde_call * loss_pde +
+            self.w_bound_call * loss_bound.item()
+        )
+      else:
+        loss_call = (
+            self.lambda_data * loss_data +
+            self.lambda_pde * loss_pde +
+            self.lambda_bound * loss_bound.item()
+            )
+
+      self.call_losses.append(loss_call.item())
+
+
+      alpha_pred = self.NN_alpha(self.dataset.x)
+      beta_pred = self.NN_beta(self.dataset.x)
+
+      alpha_error = torch.mean(torch.abs(alpha_pred - self.exact_alpha) / torch.abs(self.exact_alpha))
+      beta_error = torch.mean(torch.abs(beta_pred - self.exact_beta) / self.exact_beta)
+      self.alpha_errors.append(alpha_error.item())
+      self.beta_errors.append(beta_error.item())
+
+      if (epoch+1) % 1000 == 0:
+        print(f'Epoch {epoch+1}')
+
+        print(f'PDE loss, {loss_pde}')
+        print(f'Boundary loss, {loss_bound.item()}')
+        print(f'Alpha error, {alpha_error}')
+        print(f'Beta error, {beta_error}')
+        print('--------------------------------------')
+
+      if loss_call < self.best_call_loss:
+        self.best_call_loss = loss_call
+        self.best_alpha_error = alpha_error
+        self.best_beta_error = beta_error
+        self.best_epoch = current_epoch
+        torch.save(self.NN_alpha.state_dict(), self.model_alpha_save_path)
+        torch.save(self.NN_beta.state_dict(), self.model_beta_save_path)
+        torch.save(self.NN_call.state_dict(), self.model_call_save_path)
+
+  def run(self, phase_type = 'Single Phase'):
+
+    self.exact_alpha = self.true_alpha(self.dataset_unscaled.x)
+    self.exact_beta = self.true_beta(self.dataset_unscaled.x)
+
+    self.best_alpha_error = float('inf')
+    self.best_beta_error = float('inf')
+    self.best_call_loss = float('inf')
+    self.best_epoch = 0
+    self.model_alpha_save_path = "best_model_alpha.pth"
+    self.model_beta_save_path = "best_model_beta.pth"
+    self.model_call_save_path = "best_model_call.pth"
 
     self.data_losses = []
     self.bound_losses = []
@@ -529,196 +843,25 @@ class TrainSV():
 
     self.initialize_adaptive_weights()
 
-    if single_phase:
-      for epoch in range(self.num_epochs):
-        if (epoch + 1) % 100 == 0:
-          update_weights = True
-        else:
-          update_weights = False
+    if phase_type == 'Single Phase':
+      self.train_single_phase()
 
-        if epoch / self.num_epochs < 0.9 or not self.use_LBFGS:
-            loss_data, loss_bound, loss_pde, loss_arb, loss_reg, loss_call = self.train_step_adam(update_weights)
-        else:
-          logs = self.train_step_LBFGS(skip_call = False)
-          loss_data = logs['loss_call_data']
-          loss_bound = logs['loss_call_bound']
-          loss_pde = logs['loss_call_pde']
-          loss_arb = logs['loss_call_arb']
-          loss_call = logs['loss_call_total']
+    elif phase_type == 'Dual Phase type I':
+      self.train_dual_phase_I()
 
-        if np.isnan(loss_call).any():
-          print(f'Nan detected at epoch {epoch+1}')
-          break
-
-        self.data_losses.append(loss_data)
-        self.bound_losses.append(loss_bound)
-        self.pde_losses.append(loss_pde)
-        self.arb_losses.append(loss_arb)
-        self.reg_losses.append(loss_reg)
-        self.call_losses.append(loss_call)
-
-        alpha_pred = self.NN_alpha(self.dataset.x)
-        beta_pred = self.NN_beta(self.dataset.x)
-
-        alpha_error = torch.mean(torch.abs(alpha_pred - exact_alpha) / torch.abs(exact_alpha + 1e-8))
-        beta_error = torch.mean(torch.abs(beta_pred - exact_beta) / torch.abs(exact_beta + 1e-8))
-        alpha_beta_error = torch.maximum(alpha_error, beta_error)
-
-        self.alpha_errors.append(alpha_error.item())
-        self.beta_errors.append(beta_error.item())
-
-        if (epoch+1) % 100 == 0:
-          print(f'Epoch {epoch+1}')
-
-          print(f'Data loss, {loss_data}')
-          print(f'PDE loss, {loss_pde}')
-          print(f'Arbitrage loss, {loss_arb}')
-          print(f'Boundary loss, {loss_bound}')
-          print(f'Alpha error, {alpha_error}')
-          print(f'Beta error, {beta_error}')
-          print('--------------------------------------')
-
-        if loss_call < best_call_loss:
-          best_call_loss = loss_call
-          best_alpha_error = alpha_error
-          best_beta_error = beta_error
-          best_alpha_beta_error = alpha_beta_error
-          best_epoch = epoch
-          torch.save(self.NN_alpha.state_dict(), model_alpha_save_path)
-          torch.save(self.NN_beta.state_dict(), model_beta_save_path)
-          torch.save(self.NN_call.state_dict(), model_call_save_path)
+    elif phase_type == 'Dual Phase type II':
+      self.train_dual_phase_II()
 
     else:
-      update_weights = False
-      loss_data, loss_bound, loss_pde, loss_arb, loss_reg, loss_call = self.train_step_adam(update_weights)
-      epoch_number = 1
-      while loss_data > self.tol:
-        if epoch_number > int(self.num_epochs / 2):
-          print(f'Switched to phase two after {self.num_epochs / 2} epochs')
-          break
-        if epoch_number % 100 == 0:
-          update_weights = True
-        else:
-          update_weights = False
+      raise ValueError('Invalid phase type')
 
-        loss_data, loss_bound, loss_pde, loss_arb, loss_reg, loss_call = self.train_step_adam(update_weights)
-        epoch_number += 1
-
-        if np.isnan(loss_call).any():
-          print(f'Nan detected at epoch {epoch_number}')
-          break
-
-        self.data_losses.append(loss_data)
-        self.bound_losses.append(loss_bound)
-        self.pde_losses.append(loss_pde)
-        self.arb_losses.append(loss_arb)
-        self.reg_losses.append(loss_reg)
-        self.call_losses.append(loss_call)
-
-        alpha_pred = self.NN_alpha(self.dataset.x)
-        beta_pred = self.NN_beta(self.dataset.x)
-
-        alpha_error = torch.mean(torch.abs(alpha_pred - exact_alpha) / torch.abs(exact_alpha + 1e-8))
-        beta_error = torch.mean(torch.abs(beta_pred - exact_beta) / torch.abs(exact_beta + 1e-8))
-        self.alpha_errors.append(alpha_error.item())
-        self.beta_errors.append(beta_error.item())
-
-        if (epoch_number) % 100 == 0:
-          print(f'Epoch {epoch_number}')
-
-          print(f'Data loss, {loss_data}')
-          print(f'PDE loss, {loss_pde}')
-          print(f'Arbitrage loss, {loss_arb}')
-          print(f'Boundary loss, {loss_bound}')
-          print(f'Alpha error, {alpha_error}')
-          print(f'Beta error, {beta_error}')
-          print('--------------------------------------')
-
-        if loss_call < best_call_loss:
-          best_call_loss = loss_call
-          best_alpha_error = alpha_error
-          best_beta_error = beta_error
-          best_epoch = epoch_number
-          torch.save(self.NN_alpha.state_dict(), model_alpha_save_path)
-          torch.save(self.NN_beta.state_dict(), model_beta_save_path)
-          torch.save(self.NN_call.state_dict(), model_call_save_path)
-
-      print(f'Switched phase after {epoch_number} epochs')
-
-      phase1_duration = epoch_number
-
-      for epoch in range(int(self.num_epochs / 2)):
-        current_epoch = phase1_duration + epoch
-        if (epoch + 1) % 100 == 0:
-          update_weights = True
-        else:
-          update_weights = False
-
-        loss_flow, loss_pde = self.train_step_adam_alpha_beta_only(update_weights)
-
-        loss_bound = self.loss_bound()
-
-        if loss_bound.isnan().any() or np.isnan(loss_pde):
-          print(f'Nan detected at epoch {epoch+1} in second phase')
-          break
-
-        self.bound_losses.append(loss_bound.item())
-        self.pde_losses.append(loss_pde)
-        self.data_losses.append(loss_data)
-        self.arb_losses.append(loss_arb)
-
-        if self.use_adaptive_loss_weights:
-          loss_call = (
-              self.w_data_call * loss_data +
-              self.w_arb_call * loss_arb +
-              self.w_pde_call * loss_pde +
-              self.w_bound_call * loss_bound.item()
-          )
-        else:
-          loss_call = (
-              self.lambda_data * loss_data +
-              self.lambda_arb * loss_arb +
-              self.lambda_pde * loss_pde +
-              self.lambda_bound * loss_bound.item()
-              )
-
-        self.call_losses.append(loss_call.item())
-
-
-        alpha_pred = self.NN_alpha(self.dataset.x)
-        beta_pred = self.NN_beta(self.dataset.x)
-
-        alpha_error = torch.mean(torch.abs(alpha_pred - exact_alpha) / torch.abs(exact_alpha))
-        beta_error = torch.mean(torch.abs(beta_pred - exact_beta) / exact_beta)
-        self.alpha_errors.append(alpha_error.item())
-        self.beta_errors.append(beta_error.item())
-
-        if (epoch+1) % 1000 == 0:
-          print(f'Epoch {epoch+1}')
-
-          print(f'PDE loss, {loss_pde}')
-          print(f'Boundary loss, {loss_bound.item()}')
-          print(f'Alpha error, {alpha_error}')
-          print(f'Beta error, {beta_error}')
-          print('--------------------------------------')
-
-        if loss_call < best_call_loss:
-          best_call_loss = loss_call
-          best_alpha_error = alpha_error
-          best_beta_error = beta_error
-          best_epoch = current_epoch
-          torch.save(self.NN_alpha.state_dict(), model_alpha_save_path)
-          torch.save(self.NN_beta.state_dict(), model_beta_save_path)
-          torch.save(self.NN_call.state_dict(), model_call_save_path)
-
-
-    print(f'Best alpha error {best_alpha_error}')
-    print(f'Best beta error {best_beta_error}')
-    print(f'Best call loss {best_call_loss}')
-    print(f'Best model paths loaded from epoch {best_epoch}')
-    self.NN_alpha.load_state_dict(torch.load(model_alpha_save_path))
-    self.NN_beta.load_state_dict(torch.load(model_beta_save_path))
-    self.NN_call.load_state_dict(torch.load(model_call_save_path))
+    print(f'Best alpha error {self.best_alpha_error}')
+    print(f'Best beta error {self.best_beta_error}')
+    print(f'Best call loss {self.best_call_loss}')
+    print(f'Best model paths loaded from epoch {self.best_epoch}')
+    self.NN_alpha.load_state_dict(torch.load(self.model_alpha_save_path))
+    self.NN_beta.load_state_dict(torch.load(self.model_beta_save_path))
+    self.NN_call.load_state_dict(torch.load(self.model_call_save_path))
 
   def plot_trajectories(self, v_0):
     t_all = torch.linspace(0, 1.5, 150, dtype=torch.float32, device=self.device)
