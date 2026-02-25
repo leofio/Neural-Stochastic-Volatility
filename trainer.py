@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 from matplotlib.ticker import MaxNLocator
 
 class TrainSV():
-  def __init__(self, S_0, r, rho, nn_params, nn_call_params, tol, df, loss_weights, num_epochs, learning_rate, device, fixed_alpha = False, fixed_beta = False, use_adaptive_loss_weights=False, use_scheduler = False, use_LBFGS = False):
+  def __init__(self, S_0, r, rho, nn_params, nn_call_params, tol, df, loss_weights, num_epochs, learning_rate, device, fixed_alpha = False, fixed_beta = False, use_adaptive_loss_weights=False, weight_decay = 0, use_scheduler = False, use_LBFGS = False):
     self.S_0 = S_0
     self.r =  r
     self.rho = rho
@@ -19,6 +19,7 @@ class TrainSV():
     self.lambda_bound = loss_weights[3]
     self.lambda_reg = loss_weights[4]
     self.use_adaptive_loss_weights = use_adaptive_loss_weights
+    self.weight_decay = weight_decay
     self.num_epochs = num_epochs
     self.device = device
     self.fixed_alpha = fixed_alpha
@@ -55,11 +56,11 @@ class TrainSV():
     self.optimizer_NN_call_Adam = torch.optim.Adam(self.NN_call.parameters(), lr=self.learning_rate)
     self.optimizer_NN_call_Adam_data = torch.optim.Adam(self.NN_call.parameters(), lr=self.learning_rate)
 
-    self.optimizer_NN_alpha_Adam_phase_1 = torch.optim.Adam(self.NN_alpha.parameters(), lr= 5 * self.learning_rate)
-    self.optimizer_NN_beta_Adam_phase_1 = torch.optim.Adam(self.NN_beta.parameters(), lr= 5 * self.learning_rate)
+    self.optimizer_NN_alpha_Adam_phase_1 = torch.optim.Adam(self.NN_alpha.parameters(), lr= 5 * self.learning_rate, weight_decay = self.weight_decay)
+    self.optimizer_NN_beta_Adam_phase_1 = torch.optim.Adam(self.NN_beta.parameters(), lr= 5 * self.learning_rate, weight_decay = self.weight_decay)
 
-    self.optimizer_NN_alpha_Adam_phase_2 = torch.optim.Adam(self.NN_alpha.parameters(), lr= 10 * self.learning_rate)
-    self.optimizer_NN_beta_Adam_phase_2 = torch.optim.Adam(self.NN_beta.parameters(), lr= 10 * self.learning_rate)
+    self.optimizer_NN_alpha_Adam_phase_2 = torch.optim.Adam(self.NN_alpha.parameters(), lr= 10 * self.learning_rate, weight_decay = self.weight_decay)
+    self.optimizer_NN_beta_Adam_phase_2 = torch.optim.Adam(self.NN_beta.parameters(), lr= 10 * self.learning_rate, weight_decay = self.weight_decay)
 
     self.use_LBFGS = use_LBFGS
 
