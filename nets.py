@@ -43,10 +43,7 @@ class NetAlpha(nn.Module):
         layers.append(activation())
         layers.append(nn.Linear(neurons_per_layer[-1], output_size))
         self.layers = nn.Sequential(*layers)
-
-        for m in self.modules():
-          if isinstance(m, nn.Linear):
-              nn.init.constant_(m.bias, 0)
+        nn.init.constant_(self.layers[-1].bias, 0)
 
     def forward(self, x):
         return self.layers(x)

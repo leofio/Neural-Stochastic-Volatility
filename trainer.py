@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 from matplotlib.ticker import MaxNLocator
 
 class TrainSV():
-  def __init__(self, S_0, r, rho, nn_params, nn_call_params, tol, df, loss_weights, num_epochs, learning_rate, device, use_adaptive_loss_weights=False, use_scheduler = False, use_LBFGS = False):
+  def __init__(self, S_0, r, rho, nn_params, nn_call_params, tol, df, loss_weights, num_epochs, learning_rate, device, fixed_alpha = False, fixed_beta = False, use_adaptive_loss_weights=False, use_scheduler = False, use_LBFGS = False):
     self.S_0 = S_0
     self.r =  r
     self.rho = rho
@@ -21,6 +21,9 @@ class TrainSV():
     self.use_adaptive_loss_weights = use_adaptive_loss_weights
     self.num_epochs = num_epochs
     self.device = device
+    self.fixed_alpha = fixed_alpha
+    self.fixed_beta = fixed_beta
+
 
     self.K_max = df['Strike'].max()
     self.T_max = df['Time'].max()
@@ -82,13 +85,15 @@ class TrainSV():
     return self.NN_call(x)
 
   def true_alpha(self, x):
-    result = torch.tensor(1.5) * (torch.tensor(0.5) - x[:, 2])
-    #result = x[:, 2] * (torch.tensor(1.0) - torch.tensor(10.0) * x[:, 2])
+    # x = (time, volatility)
+    result = torch.tensor(1.5) * (torch.tensor(0.5) - x[:, 1])
+    #result = x[:, 1] * (torch.tensor(1.0) - torch.tensor(10.0) * x[:, 1])
     return result
 
   def true_beta(self, x):
+    # x = (time, volatility)
     result = torch.tensor(0.7)
-    #result = torch.tensor(2.0) * x[: ,2]**(1.5)
+    #result = torch.tensor(2.0) * x[: ,1]**(1.5)
     return result
 
   def loss_data(self):
@@ -110,32 +115,32 @@ class TrainSV():
     t_rand.requires_grad = True
 
     x_rand_t0 = torch.cat((u_rand, t_zeros, v_rand), dim = 1)
-    x_rand_v0 = torch.cat((u_rand, t_rand, v_zeros), dim = 1)
 
     call_true_t0 = torch.nn.functional.relu(1.0 - (self.K_max / self.S_0) * torch.exp(u_rand))
-    call_true_v0 = torch.nn.functional.relu(1.0 - (self.K_max / self.S_0) * torch.exp(u_rand) * torch.exp(-self.r * self.T_max * t_rand), 0)
 
     call_pred_t0 = self.call(x_rand_t0)
-    call_pred_v0 = self.call(x_rand_v0)
 
     with torch.no_grad():
         weight_t = torch.clamp(torch.mean(torch.abs(call_true_t0)) / torch.abs(call_true_t0), min=0.1, max=10)
-        weight_v = torch.clamp(torch.mean(torch.abs(call_true_v0)) / torch.abs(call_true_v0), min=0.1, max=10)
 
     loss_t0 = torch.mean(weight_t * (call_pred_t0 - call_true_t0)**2)
-    loss_v0 = torch.mean(weight_v * (call_pred_v0 - call_true_v0)**2)
-    loss_bound = (loss_t0 + loss_v0)
-    return loss_bound
+    return loss_t0
 
-  def loss_bound_flow(self):
+  def loss_bound_flow(self, seed = None):
+    if seed is not None:
+      torch.manual_seed(seed)
     v_zeros = torch.zeros((128,1), dtype = torch.float32, requires_grad = True).to(self.device)
     u_rand = -self.u_min * torch.rand((128,1), dtype = torch.float32, device = self.device, requires_grad=True) + self.u_min
     t_rand = torch.rand((128,1), dtype = torch.float32, device = self.device, requires_grad= True)
 
     x_rand_v0 = torch.cat((u_rand, t_rand, v_zeros), dim = 1)
+    net_input_rand_v0 = torch.cat((t_rand, v_zeros), dim = 1)
 
     call_pred_v0 = self.call(x_rand_v0)
-    alpha_pred = self.NN_alpha(x_rand_v0)
+    if not self.fixed_alpha:
+      alpha_pred = self.NN_alpha(net_input_rand_v0)
+    else:
+      alpha_pred = self.true_alpha(net_input_rand_v0)
 
     grad_call_v0_pred_t = torch.autograd.grad(call_pred_v0, t_rand, grad_outputs=torch.ones_like(call_pred_v0), create_graph=True)[0]
     grad_call_v0_pred_v = torch.autograd.grad(call_pred_v0, v_zeros, grad_outputs=torch.ones_like(call_pred_v0), create_graph=True)[0]
@@ -143,14 +148,16 @@ class TrainSV():
     with torch.no_grad():
       weight_dt = torch.clamp(torch.mean(torch.abs(grad_call_v0_pred_t)) / torch.abs(grad_call_v0_pred_t), min=0.1, max=10)
 
-    v0_pde = (1 / self.T_max) * grad_call_v0_pred_t + alpha_pred * grad_call_v0_pred_v - self.r * call_pred_v0
+    v0_pde = - (1.0 / self.T_max) * grad_call_v0_pred_t + alpha_pred * grad_call_v0_pred_v
     loss_v0_flow = torch.mean(weight_dt * (v0_pde)**2)
     return loss_v0_flow
 
-  def loss_bound(self):
-    return (1 / 3) * (self.loss_bound_fixed() + self.loss_bound_flow())
+  def loss_bound(self, seed = None):
+    return 0.5 * self.loss_bound_fixed() + 0.5 * self.loss_bound_flow(seed)
 
-  def loss_pde(self):
+  def loss_pde(self, seed = None):
+    if seed is not None:
+      torch.manual_seed(seed)
     t_anchored = torch.zeros((256,1), dtype = torch.float32, device = self.device)
     u_anchored = torch.zeros((256,1), dtype = torch.float32, device = self.device)
     v_anchored_0 = torch.zeros((128,1), dtype = torch.float32, device = self.device)
@@ -169,10 +176,18 @@ class TrainSV():
     v_rand.requires_grad = True
 
     x_rand = torch.cat((u_rand, t_rand, v_rand), dim = 1)
+    net_input_rand = torch.cat((t_rand, v_rand), dim = 1)
 
     call_pred = self.call(x_rand)
-    alpha_pred = self.NN_alpha(x_rand)
-    beta_pred = self.NN_beta(x_rand)
+    if not self.fixed_alpha:
+      alpha_pred = self.NN_alpha(net_input_rand)
+    else:
+      alpha_pred = self.true_alpha(net_input_rand)
+
+    if self.fixed_beta == False:
+      beta_pred = self.NN_beta(net_input_rand)
+    else:
+      beta_pred = self.true_beta(net_input_rand)
 
     grad_pred_t = torch.autograd.grad(call_pred, t_rand, grad_outputs=torch.ones_like(call_pred), create_graph=True)[0]
     grad_pred_u = torch.autograd.grad(call_pred, u_rand, grad_outputs=torch.ones_like(call_pred), create_graph=True)[0]
@@ -183,16 +198,15 @@ class TrainSV():
     grad_pred_uv = torch.autograd.grad(grad_pred_u, v_rand, grad_outputs=torch.ones_like(grad_pred_u), create_graph=True)[0]
 
     f_pde = (
-        (1 / self.T_max) * grad_pred_t
+        - (1.0 / self.T_max) * grad_pred_t
         + 0.5 * v_rand * (grad_pred_uu - grad_pred_u)
-        + self.rho * beta_pred * v_rand * grad_pred_uv
+        - self.rho * beta_pred * v_rand * grad_pred_uv
         + 0.5 * v_rand * (beta_pred ** 2) * grad_pred_vv
-        + alpha_pred * grad_pred_v
-        - self.r * call_pred
+        + (alpha_pred + self.rho * beta_pred * v_rand) * grad_pred_v
     )
 
-    f_arb_1 = torch.nn.functional.relu(grad_pred_t - self.r * self.T_max * grad_pred_u)
-    f_arb_2 = torch.nn.functional.relu(grad_pred_uu - grad_pred_u)
+    f_arb_1 = grad_pred_t - self.r * self.T_max * grad_pred_u
+    f_arb_2 = grad_pred_uu - grad_pred_u
 
     with torch.no_grad():
       weight_ = torch.clamp(torch.mean(torch.abs(grad_pred_t)) / torch.abs(grad_pred_t), min=0.1, max=10)
@@ -204,12 +218,15 @@ class TrainSV():
 
   def compute_grad_norm(self, loss, params):
         """Helper: Computes gradient norm for a specific loss w.r.t parameters."""
+        if not params:
+          return torch.tensor(0.0).to(self.device)
         grads = torch.autograd.grad(
             loss, params, retain_graph=True, create_graph=False, allow_unused=True
         )
-        grad_vec = torch.cat([g.view(-1) for g in grads if g is not None])
-        if grad_vec.numel() == 0:
-            return torch.tensor(0.0).to(self.device)
+        filtered_grads = [g.view(-1) for g in grads if g is not None]
+        if not filtered_grads:
+          return torch.tensor(0.0).to(self.device)
+        grad_vec = torch.cat(filtered_grads)
         return torch.norm(grad_vec)
 
   def get_adaptive_weights(self, losses, params):
@@ -221,6 +238,9 @@ class TrainSV():
 
         total_norm = sum(norms)
 
+        if total_norm == 0.0:
+          return [torch.tensor(1.0).to(self.device) for _ in losses]
+
         weights = [torch.clamp((total_norm / (n + 1e-8)).detach(), max=100.0) for n in norms]
 
         return weights
@@ -231,9 +251,14 @@ class TrainSV():
     loss_pde, loss_arb, loss_reg = self.loss_pde()
     losses = [loss_pde, loss_bound, loss_data, loss_arb]
 
-    self.w_pde_alpha, self.w_bound_alpha = self.get_adaptive_weights(
-                losses[:2], list(self.NN_alpha.parameters())
-            )
+    if not self.fixed_alpha:
+      self.w_pde_alpha, self.w_bound_alpha = self.get_adaptive_weights(
+                  losses[:2], list(self.NN_alpha.parameters())
+              )
+    else:
+      self.w_pde_alpha = torch.tensor(self.lambda_pde, dtype=torch.float32).to(self.device)
+      self.w_bound_alpha = torch.tensor(self.lambda_bound, dtype=torch.float32).to(self.device)
+
     weights = self.get_adaptive_weights(losses, list(self.NN_call.parameters()))
     self.w_pde_call, self.w_bound_call, self.w_data_call, self.w_arb_call  = weights
     return self.w_pde_alpha, self.w_bound_alpha, self.w_data_call, self.w_arb_call, self.w_pde_call, self.w_bound_call
@@ -255,31 +280,32 @@ class TrainSV():
 
       self.w_pde_alpha, self.w_bound_alpha = (0.9) * self.w_pde_alpha + 0.1 * w_pde_tilde, 0.9 * self.w_bound_alpha + 0.1 * w_bound_tilde
 
-    if self.use_adaptive_loss_weights:
-      loss_alpha = self.w_pde_alpha * loss_pde + self.w_bound_alpha * loss_bound
-    else:
-      loss_alpha = self.lambda_pde * loss_pde + self.lambda_bound * loss_bound
-    loss_alpha.backward()
+    if not self.fixed_alpha:
+      if self.use_adaptive_loss_weights:
+        loss_alpha = self.w_pde_alpha * loss_pde + self.w_bound_alpha * loss_bound
+      else:
+        loss_alpha = self.lambda_pde * loss_pde + self.lambda_bound * loss_bound
+      loss_alpha.backward()
 
-    for group in self.optimizer_NN_alpha_Adam_phase_1.param_groups:
-        torch.nn.utils.clip_grad_norm_(group['params'], 1.0)
+      for group in self.optimizer_NN_alpha_Adam_phase_1.param_groups:
+          torch.nn.utils.clip_grad_norm_(group['params'], 1.0)
 
-    self.optimizer_NN_alpha_Adam_phase_1.step()
+      self.optimizer_NN_alpha_Adam_phase_1.step()
 
     self.optimizer_NN_call_Adam.zero_grad()
     self.optimizer_NN_alpha_Adam_phase_1.zero_grad()
     self.optimizer_NN_beta_Adam_phase_1.zero_grad()
 
     # --- 2. Optimize Beta (PDE Only) ---
+    if not self.fixed_beta:
+      loss_pde, _, _ = self.loss_pde()
+      loss_beta = loss_pde
+      loss_beta.backward()
 
-    loss_pde, _, _ = self.loss_pde()
-    loss_beta = loss_pde
-    loss_beta.backward()
+      for group in self.optimizer_NN_beta_Adam_phase_1.param_groups:
+        torch.nn.utils.clip_grad_norm_(group['params'], 1.0)
 
-    for group in self.optimizer_NN_beta_Adam_phase_1.param_groups:
-      torch.nn.utils.clip_grad_norm_(group['params'], 1.0)
-
-    self.optimizer_NN_beta_Adam_phase_1.step()
+      self.optimizer_NN_beta_Adam_phase_1.step()
 
     self.optimizer_NN_call_Adam.zero_grad()
     self.optimizer_NN_alpha_Adam_phase_1.zero_grad()
@@ -322,8 +348,10 @@ class TrainSV():
     self.optimizer_NN_call_Adam.step()
 
     if self.use_scheduler:
-      self.sched_alpha_phase_1.step(loss_alpha.item())
-      self.sched_beta_phase_1.step(loss_beta.item())
+      if not self.fixed_alpha:
+        self.sched_alpha_phase_1.step(loss_alpha.item())
+      if not self.fixed_beta:
+        self.sched_beta_phase_1.step(loss_beta.item())
       self.sched_call.step(loss_call.item())
 
     return loss_data.item(), loss_bound.item(), loss_pde.item(), loss_arb.item(), loss_reg.item(), loss_call.item()
@@ -346,52 +374,58 @@ class TrainSV():
 
     # --- 1. Optimize Alpha (PDE + Bound) ---
 
-    loss_bound = self.loss_bound_flow()
-    loss_pde, _, _ = self.loss_pde()
+    if not self.fixed_alpha:
+      loss_bound = self.loss_bound_flow()
+      loss_pde, _, _ = self.loss_pde()
 
-    if update_weights:
-      w_pde_tilde, w_bound_tilde = self.get_adaptive_weights(
-          [loss_pde, loss_bound], list(self.NN_alpha.parameters())
-      )
+      if update_weights:
+        w_pde_tilde, w_bound_tilde = self.get_adaptive_weights(
+            [loss_pde, loss_bound], list(self.NN_alpha.parameters())
+        )
 
-      self.w_pde_alpha, self.w_bound_alpha = (0.9) * self.w_pde_alpha + 0.1 * w_pde_tilde, 0.9 * self.w_bound_alpha + 0.1 * w_bound_tilde
+        self.w_pde_alpha, self.w_bound_alpha = (0.9) * self.w_pde_alpha + 0.1 * w_pde_tilde, 0.9 * self.w_bound_alpha + 0.1 * w_bound_tilde
 
-    if self.use_adaptive_loss_weights:
-      loss_alpha = self.w_pde_alpha * loss_pde + self.w_bound_alpha * loss_bound
-    else:
-      loss_alpha = self.lambda_pde * loss_pde + self.lambda_bound * loss_bound
+      if self.use_adaptive_loss_weights:
+        loss_alpha = self.w_pde_alpha * loss_pde + self.w_bound_alpha * loss_bound
+      else:
+        loss_alpha = self.lambda_pde * loss_pde + self.lambda_bound * loss_bound
 
-    scaled_alpha = self.scaler_alpha_adam * loss_alpha
-    scaled_alpha.backward()
+      scaled_alpha = self.scaler_alpha_adam * loss_alpha
+      scaled_alpha.backward()
 
-    for group in self.optimizer_NN_alpha_Adam_phase_2.param_groups:
-        torch.nn.utils.clip_grad_norm_(group['params'], 1.0)
+      for group in self.optimizer_NN_alpha_Adam_phase_2.param_groups:
+          torch.nn.utils.clip_grad_norm_(group['params'], 1.0)
 
-    self.optimizer_NN_alpha_Adam_phase_2.step()
+      self.optimizer_NN_alpha_Adam_phase_2.step()
 
     self.optimizer_NN_alpha_Adam_phase_2.zero_grad()
     self.optimizer_NN_beta_Adam_phase_2.zero_grad()
 
     # --- 2. Optimize Beta (PDE Only) ---
 
-    loss_pde, _, _ = self.loss_pde()
-    loss_beta = loss_pde
-    scaled_beta = self.scaler_beta_adam * loss_beta
-    scaled_beta.backward()
+    if not self.fixed_beta:
+      loss_pde, _, _ = self.loss_pde()
+      loss_beta = loss_pde
+      scaled_beta = self.scaler_beta_adam * loss_beta
+      scaled_beta.backward()
 
-    for group in self.optimizer_NN_beta_Adam_phase_2.param_groups:
-      torch.nn.utils.clip_grad_norm_(group['params'], 1.0)
+      for group in self.optimizer_NN_beta_Adam_phase_2.param_groups:
+        torch.nn.utils.clip_grad_norm_(group['params'], 1.0)
 
-    self.optimizer_NN_beta_Adam_phase_2.step()
+      self.optimizer_NN_beta_Adam_phase_2.step()
 
     self.optimizer_NN_alpha_Adam_phase_2.zero_grad()
     self.optimizer_NN_beta_Adam_phase_2.zero_grad()
 
     if self.use_scheduler:
-      self.sched_alpha_phase_2.step(loss_alpha.item())
-      self.sched_beta_phase_2.step(loss_beta.item())
-
-    return loss_bound.item(), loss_pde.item()
+      if not self.fixed_alpha:
+        self.sched_alpha_phase_2.step(loss_alpha.item())
+      if not self.fixed_beta:
+        self.sched_beta_phase_2.step(loss_beta.item())
+    if not self.fixed_alpha:
+      return loss_bound.item(), loss_pde.item()
+    else:
+      return 0, loss_pde.item()
 
   def train_step_adam_data(self):
     self.optimizer_NN_call_Adam_data.zero_grad()
@@ -409,6 +443,8 @@ class TrainSV():
   def train_step_LBFGS(self, skip_call):
 
     logs = {}
+
+    step_seed = torch.randint(0, 1000000, (1,)).item()
 
     if not hasattr(self, 'scaler_alpha'):
       if self.use_adaptive_loss_weights:
@@ -439,8 +475,8 @@ class TrainSV():
 
     def closure_alpha():
       self.optimizer_NN_alpha_LBFGS.zero_grad()
-      loss_bound = self.loss_bound()
-      loss_pde, _, _ = self.loss_pde()
+      loss_bound = self.loss_bound(seed = step_seed)
+      loss_pde, _, _ = self.loss_pde(seed = step_seed)
       if self.use_adaptive_loss_weights:
         loss_alpha = self.w_pde_alpha * loss_pde + self.w_bound_alpha * loss_bound
       else:
@@ -460,7 +496,7 @@ class TrainSV():
 
     def closure_beta():
       self.optimizer_NN_beta_LBFGS.zero_grad()
-      loss_pde, _, _ = self.loss_pde()
+      loss_pde, _, _ = self.loss_pde(seed = step_seed)
       loss_beta = loss_pde
       scaled_beta = loss_beta * self.scaler_beta
       scaled_beta.backward()
@@ -477,8 +513,8 @@ class TrainSV():
     def closure_call():
       self.optimizer_NN_call_LBFGS.zero_grad()
       loss_data = self.loss_data()
-      loss_bound = self.loss_bound()
-      loss_pde, loss_arb, loss_reg = self.loss_pde()
+      loss_bound = self.loss_bound(seed = step_seed)
+      loss_pde, loss_arb, loss_reg = self.loss_pde(seed = step_seed)
       if self.use_adaptive_loss_weights:
         loss_call = (
             self.w_data_call * loss_data +
@@ -510,8 +546,10 @@ class TrainSV():
 
       return scaled_call
 
-    loss_alpha = self.optimizer_NN_alpha_LBFGS.step(closure_alpha)
-    loss_beta = self.optimizer_NN_beta_LBFGS.step(closure_beta)
+    if not self.fixed_alpha:
+      loss_alpha = self.optimizer_NN_alpha_LBFGS.step(closure_alpha)
+    if not self.fixed_beta:
+      loss_beta = self.optimizer_NN_beta_LBFGS.step(closure_beta)
     if not skip_call:
       loss_call = self.optimizer_NN_call_LBFGS.step(closure_call)
 
@@ -545,8 +583,15 @@ class TrainSV():
       self.reg_losses.append(loss_reg)
       self.call_losses.append(loss_call)
 
-      alpha_pred = self.NN_alpha(self.dataset.x)
-      beta_pred = self.NN_beta(self.dataset.x)
+      if not self.fixed_alpha:
+        alpha_pred = self.NN_alpha(self.dataset.x[:, 1:])
+      else:
+        alpha_pred = self.true_alpha(self.dataset.x[:, 1:])
+
+      if not self.fixed_beta:
+        beta_pred = self.NN_beta(self.dataset.x[:, 1:])
+      else:
+        beta_pred = self.true_beta(self.dataset.x[:, 1:])
 
       alpha_error = torch.mean(torch.abs(alpha_pred - self.exact_alpha) / torch.abs(self.exact_alpha + 1e-8))
       beta_error = torch.mean(torch.abs(beta_pred - self.exact_beta) / torch.abs(self.exact_beta + 1e-8))
@@ -611,8 +656,14 @@ class TrainSV():
       self.reg_losses.append(loss_reg)
       self.call_losses.append(loss_call)
 
-      alpha_pred = self.NN_alpha(self.dataset.x)
-      beta_pred = self.NN_beta(self.dataset.x)
+      if not self.fixed_alpha:
+        alpha_pred = self.NN_alpha(self.dataset.x[:, 1:])
+      else:
+        alpha_pred = self.true_alpha(self.dataset.x[:, 1:])
+      if not self.fixed_beta:
+        beta_pred = self.NN_beta(self.dataset.x[:, 1:])
+      else:
+        beta_pred = self.true_beta(self.dataset.x[:, 1:])
 
       alpha_error = torch.mean(torch.abs(alpha_pred - self.exact_alpha) / torch.abs(self.exact_alpha + 1e-8))
       beta_error = torch.mean(torch.abs(beta_pred - self.exact_beta) / torch.abs(self.exact_beta + 1e-8))
@@ -670,6 +721,7 @@ class TrainSV():
             self.w_pde_call * loss_pde +
             self.w_bound_call * loss_bound.item()
         )
+        self.call_losses.append(loss_call.item())
       else:
         loss_call = (
             self.lambda_data * loss_data +
@@ -677,12 +729,16 @@ class TrainSV():
             self.lambda_pde * loss_pde +
             self.lambda_bound * loss_bound.item()
             )
+        self.call_losses.append(loss_call)
 
-      self.call_losses.append(loss_call.item())
-
-
-      alpha_pred = self.NN_alpha(self.dataset.x)
-      beta_pred = self.NN_beta(self.dataset.x)
+      if not self.fixed_alpha:
+        alpha_pred = self.NN_alpha(self.dataset.x[:, 1:])
+      else:
+        alpha_pred = self.true_alpha(self.dataset.x[:, 1:])
+      if not self.fixed_beta:
+        beta_pred = self.NN_beta(self.dataset.x[:, 1:])
+      else:
+        beta_pred = self.true_beta(self.dataset.x[:, 1:])
 
       alpha_error = torch.mean(torch.abs(alpha_pred - self.exact_alpha) / torch.abs(self.exact_alpha))
       beta_error = torch.mean(torch.abs(beta_pred - self.exact_beta) / self.exact_beta)
@@ -739,8 +795,15 @@ class TrainSV():
       self.reg_losses.append(1)
       self.call_losses.append(1)
 
-      alpha_pred = self.NN_alpha(self.dataset.x)
-      beta_pred = self.NN_beta(self.dataset.x)
+      if not self.fixed_alpha:
+        alpha_pred = self.NN_alpha(self.dataset.x[:, 1:])
+      else:
+        alpha_pred = self.true_alpha(self.dataset.x[:, 1:])
+
+      if not self.fixed_beta:
+        beta_pred = self.NN_beta(self.dataset.x[:, 1:])
+      else:
+        beta_pred = self.true_beta(self.dataset.x[:, 1:])
 
       alpha_error = torch.mean(torch.abs(alpha_pred - self.exact_alpha) / torch.abs(self.exact_alpha + 1e-8))
       beta_error = torch.mean(torch.abs(beta_pred - self.exact_beta) / torch.abs(self.exact_beta + 1e-8))
@@ -792,9 +855,14 @@ class TrainSV():
 
       self.call_losses.append(loss_call.item())
 
-
-      alpha_pred = self.NN_alpha(self.dataset.x)
-      beta_pred = self.NN_beta(self.dataset.x)
+      if not self.fixed_alpha:
+        alpha_pred = self.NN_alpha(self.dataset.x[:, 1:])
+      else:
+        alpha_pred = self.true_alpha(self.dataset.x[:, 1:])
+      if not self.fixed_beta:
+        beta_pred = self.NN_beta(self.dataset.x[:, 1:])
+      else:
+        beta_pred = self.true_beta(self.dataset.x[:, 1:])
 
       alpha_error = torch.mean(torch.abs(alpha_pred - self.exact_alpha) / torch.abs(self.exact_alpha))
       beta_error = torch.mean(torch.abs(beta_pred - self.exact_beta) / self.exact_beta)
@@ -819,10 +887,91 @@ class TrainSV():
         torch.save(self.NN_beta.state_dict(), self.model_beta_save_path)
         torch.save(self.NN_call.state_dict(), self.model_call_save_path)
 
+  def fisher_information_pde(self, num_samples=500):
+    self.NN_alpha.eval()
+    self.NN_beta.eval()
+    self.NN_call.eval()
+
+    params_alpha = [] if self.fixed_alpha else list(self.NN_alpha.parameters())
+    params_beta = [] if self.fixed_beta else list(self.NN_beta.parameters())
+    all_params = params_alpha + params_beta
+
+    total_p = sum(p.numel() for p in all_params)
+    fim = torch.zeros((total_p, total_p), device=self.device)
+
+    print(f"--- FIM Mapping ({total_p} total parameters) ---")
+    offset = 0
+    if not self.fixed_alpha:
+      for name, p in self.NN_alpha.named_parameters():
+          num = p.numel()
+          print(f"Rows {offset:4d} to {offset+num-1:4d}: NN_alpha.{name}")
+          offset += num
+    if not self.fixed_beta:
+        for name, p in self.NN_beta.named_parameters():
+            num = p.numel()
+            print(f"Rows {offset:4d} to {offset+num-1:4d}: NN_beta.{name}")
+            offset += num
+
+    u_samples = -self.u_min * torch.rand((num_samples, 1), device=self.device) + self.u_min
+    t_samples = torch.rand((num_samples, 1), device=self.device)
+    v_samples = (self.v_max - self.v_min) * torch.rand((num_samples, 1), device=self.device) + self.v_min
+
+    u_samples.requires_grad = True
+    t_samples.requires_grad = True
+    v_samples.requires_grad = True
+
+    for i in range(num_samples):
+        u_i, t_i, v_i = u_samples[i:i+1], t_samples[i:i+1], v_samples[i:i+1]
+        x_i = torch.cat((u_i, t_i, v_i), dim=1)
+        net_in_i = torch.cat((t_i, v_i), dim=1)
+
+        call_p = self.call(x_i)
+        a_p = self.NN_alpha(net_in_i) if not self.fixed_alpha else self.true_alpha(x_i)
+        b_p = self.NN_beta(net_in_i) if not self.fixed_beta else self.true_beta(x_i)
+
+        g_u = torch.autograd.grad(call_p, u_i, create_graph=True)[0]
+        g_v = torch.autograd.grad(call_p, v_i, create_graph=True)[0]
+        g_t = torch.autograd.grad(call_p, t_i, create_graph=True)[0]
+        g_uu = torch.autograd.grad(g_u, u_i, create_graph=True)[0]
+        g_vv = torch.autograd.grad(g_v, v_i, create_graph=True)[0]
+        g_uv = torch.autograd.grad(g_u, v_i, create_graph=True)[0]
+
+        f_pde = (
+        - (1.0 / self.T_max) * g_t
+        + 0.5 * v_i * (g_uu - g_u)
+        - self.rho * b_p * v_i * g_uv
+        + 0.5 * v_i * (b_p ** 2) * g_vv
+        + (a_p + self.rho * b_p * v_i) * g_v
+    )
+
+        if not self.fixed_alpha: self.NN_alpha.zero_grad()
+        if not self.fixed_beta: self.NN_beta.zero_grad()
+
+        res_grad = torch.autograd.grad(f_pde, all_params, retain_graph=False)
+        flat_res_grad = torch.cat([g.reshape(-1) for g in res_grad])
+
+        fim += torch.outer(flat_res_grad, flat_res_grad)
+    fim = (fim / num_samples).detach().cpu().numpy()
+
+    eigenvalues = np.linalg.eigh(fim)[0]
+    eigenvalues[eigenvalues < 1e-15] = 0
+    max_eig = eigenvalues[-1]
+    min_eig = eigenvalues[0]
+
+    if min_eig > 0:
+      kappa = max_eig / min_eig
+    else:
+      kappa = float('inf')
+
+    print(f'Max eigenvalue: {max_eig}')
+    print(f'Min eigenvalue: {min_eig}')
+    print(f'Condition Number: {kappa}')
+    return fim
+
   def run(self, phase_type = 'Single Phase'):
 
-    self.exact_alpha = self.true_alpha(self.dataset_unscaled.x)
-    self.exact_beta = self.true_beta(self.dataset_unscaled.x)
+    self.exact_alpha = self.true_alpha(self.dataset_unscaled.x[:, 1:])
+    self.exact_beta = self.true_beta(self.dataset_unscaled.x[:, 1:])
 
     self.best_alpha_error = float('inf')
     self.best_beta_error = float('inf')
@@ -843,6 +992,8 @@ class TrainSV():
 
     self.initialize_adaptive_weights()
 
+    self.fisher_information_pde()
+
     if phase_type == 'Single Phase':
       self.train_single_phase()
 
@@ -854,6 +1005,8 @@ class TrainSV():
 
     else:
       raise ValueError('Invalid phase type')
+
+    self.fisher_information_pde()
 
     print(f'Best alpha error {self.best_alpha_error}')
     print(f'Best beta error {self.best_beta_error}')
@@ -882,7 +1035,7 @@ class TrainSV():
 
       input_tensor = torch.cat([S_now.view(-1), t_i.view(-1), v_now.view(-1)]).unsqueeze(0)
 
-      v_inc = self.true_alpha(input_tensor) * 0.01 + self.true_beta(input_tensor) * torch.sqrt(v_now) * dW2[i]
+      v_inc = self.true_alpha(input_tensor[:, 1:]) * 0.01 + self.true_beta(input_tensor[:, 1:]) * torch.sqrt(v_now) * dW2[i]
       v_now = torch.nn.functional.relu(v_now + v_inc)
 
       S_path_true.append(S_now.clone())
@@ -900,9 +1053,17 @@ class TrainSV():
 
       u = torch.log(torch.exp(-self.r * t_i) * S_now_1 / self.K_max)
       t = t_i / self.T_max
-      x = torch.cat((u.view(-1), t.view(-1), v_now_1.view(-1)), dim=0).unsqueeze(0)
+      x_net = torch.cat((t.view(-1), v_now_1.view(-1)), dim=0).unsqueeze(0)
 
-      v_inc_1 = self.NN_alpha(x) * 0.01 + self.NN_beta(x) * torch.sqrt(v_now_1) * dW2[i]
+      if not self.fixed_beta and not self.fixed_alpha:
+        v_inc_1 = self.NN_alpha(x_net) * 0.01 + self.NN_beta(x_net) * torch.sqrt(v_now_1) * dW2[i]
+      elif not self.fixed_beta:
+        v_inc_1 = self.true_alpha(x_net) * 0.01 + self.NN_beta(x_net) * torch.sqrt(v_now_1) * dW2[i]
+      elif not self.fixed_alpha:
+        v_inc_1 = self.NN_alpha(x_net) * 0.01 + self.true_beta(x_net) * torch.sqrt(v_now_1) * dW2[i]
+      else:
+        v_inc_1 = self.true_alpha(x_net) * 0.01 + self.true_beta(x_net) * torch.sqrt(v_now_1) * dW2[i]
+
       v_now_1 = torch.nn.functional.relu(v_now_1 + v_inc_1)
 
       S_path_pred.append(S_now_1.clone())
