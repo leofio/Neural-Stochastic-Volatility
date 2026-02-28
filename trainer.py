@@ -1,4 +1,3 @@
-
 import torch
 import numpy as np
 import pandas as pd
@@ -68,6 +67,14 @@ class TrainSV():
       self.optimizer_NN_call_LBFGS = torch.optim.LBFGS(self.NN_call.parameters(), lr=0.1, line_search_fn='strong_wolfe')
       self.optimizer_NN_alpha_LBFGS = torch.optim.LBFGS(self.NN_alpha.parameters(), lr=0.1, line_search_fn='strong_wolfe')
       self.optimizer_NN_beta_LBFGS = torch.optim.LBFGS(self.NN_beta.parameters(), lr=0.1, line_search_fn='strong_wolfe')
+
+      joint_params = list(self.NN_call.parameters())
+      if not self.fixed_alpha:
+        joint_params += list(self.NN_alpha.parameters())
+      if not self.fixed_beta:
+        joint_params += list(self.NN_beta.parameters())
+            
+      self.optimizer_joint_LBFGS = torch.optim.LBFGS(joint_params, lr=0.1, line_search_fn='strong_wolfe')
 
     self.use_scheduler = use_scheduler
 
@@ -485,10 +492,6 @@ class TrainSV():
       scaled_alpha = self.scaler_alpha * loss_alpha
       scaled_alpha.backward()
 
-      # --- Gradient Clipping ---
-      for group in self.optimizer_NN_alpha_LBFGS.param_groups:
-        torch.nn.utils.clip_grad_norm_(group['params'], 1.0)
-
       logs['alpha_pde'] = loss_pde.item()
       logs['alpha_bound'] = loss_bound.item()
       logs['alpha_total'] = loss_alpha.item()
@@ -501,10 +504,6 @@ class TrainSV():
       loss_beta = loss_pde
       scaled_beta = loss_beta * self.scaler_beta
       scaled_beta.backward()
-
-      # --- Gradient Clipping ---
-      for group in self.optimizer_NN_beta_LBFGS.param_groups:
-        torch.nn.utils.clip_grad_norm_(group['params'], 1.0)
 
       logs['beta_pde'] = loss_pde.item()
       logs['beta_total'] = loss_beta
@@ -534,10 +533,6 @@ class TrainSV():
       scaled_call = loss_call * self.scaler_call
       scaled_call.backward()
 
-      # --- Gradient Clipping ---
-      for group in self.optimizer_NN_call_LBFGS.param_groups:
-        torch.nn.utils.clip_grad_norm_(group['params'], 1.0)
-
       logs['loss_call_data'] = loss_data.item()
       logs['loss_call_pde'] = loss_pde.item()
       logs['loss_call_bound'] = loss_bound.item()
@@ -553,6 +548,117 @@ class TrainSV():
       loss_beta = self.optimizer_NN_beta_LBFGS.step(closure_beta)
     if not skip_call:
       loss_call = self.optimizer_NN_call_LBFGS.step(closure_call)
+
+    return logs
+
+  def train_step_adam_joint(self, update_weights=False):
+    self.optimizer_NN_call_Adam.zero_grad()
+    if not self.fixed_alpha:
+      self.optimizer_NN_alpha_Adam_phase_1.zero_grad()
+    if not self.fixed_beta:
+      self.optimizer_NN_beta_Adam_phase_1.zero_grad()
+
+    loss_data = self.loss_data()
+    loss_bound = self.loss_bound()
+    loss_pde, loss_arb, _ = self.loss_pde()
+      
+    if update_weights:
+      params = list(self.NN_call.parameters())
+      if not self.fixed_alpha:
+        params += list(self.NN_alpha.parameters())
+      if not self.fixed_beta:
+        params += list(self.NN_beta.parameters())
+      
+      weights_tilde = self.get_adaptive_weights([loss_pde, loss_bound, loss_data, loss_arb], params)
+      
+      self.w_pde_call = 0.9 * self.w_pde_call + 0.1 * weights_tilde[0]
+      self.w_bound_call = 0.9 * self.w_bound_call + 0.1 * weights_tilde[1]
+      self.w_data_call = 0.9 * self.w_data_call + 0.1 * weights_tilde[2]
+      self.w_arb_call = 0.9 * self.w_arb_call + 0.1 * weights_tilde[3]
+    
+    if self.use_adaptive_loss_weights:
+      loss_total = (
+          self.w_data_call * loss_data +
+          self.w_arb_call * loss_arb +
+          self.w_pde_call * loss_pde +
+          self.w_bound_call * loss_bound
+      )
+    else:
+      loss_total = (
+          self.lambda_data * loss_data +
+          self.lambda_arb * loss_arb +
+          self.lambda_pde * loss_pde +
+          self.lambda_bound * loss_bound
+      )
+    
+    loss_total.backward()
+
+    for group in self.optimizer_NN_call_Adam.param_groups:
+      torch.nn.utils.clip_grad_norm_(group['params'], 1.0)
+    self.optimizer_NN_call_Adam.step()
+
+    if not self.fixed_alpha:
+      for group in self.optimizer_NN_alpha_Adam_phase_1.param_groups:
+        torch.nn.utils.clip_grad_norm_(group['params'], 1.0)
+      self.optimizer_NN_alpha_Adam_phase_1.step()
+
+    if not self.fixed_beta:
+      for group in self.optimizer_NN_beta_Adam_phase_1.param_groups:
+        torch.nn.utils.clip_grad_norm_(group['params'], 1.0)
+      self.optimizer_NN_beta_Adam_phase_1.step()
+
+    if self.use_scheduler:
+      self.sched_call.step(loss_total.item())
+      if not self.fixed_alpha:
+        self.sched_alpha_phase_1.step(loss_total.item())
+      if not self.fixed_beta:
+        self.sched_beta_phase_1.step(loss_total.item())
+
+    return loss_data.item(), loss_bound.item(), loss_pde.item(), loss_arb.item(), loss_total.item()
+  
+  def train_step_joint_LBFGS(self):
+
+    logs = {}
+
+    step_seed = torch.randint(0, 1000000, (1,)).item()
+
+    if not hasattr(self, 'scaler_joint'):
+      init_loss = self.call_losses[-1]
+      self.scaler_joint = 10.0 / (init_loss + 1e-6)
+
+    def closure_call():
+      self.optimizer_joint_LBFGS.zero_grad()
+      loss_data = self.loss_data()
+      loss_bound = self.loss_bound(seed=step_seed)
+      loss_pde, loss_arb, _ = self.loss_pde(seed=step_seed)
+
+      if self.use_adaptive_loss_weights:
+        loss_total = (
+            self.w_data_call * loss_data +
+            self.w_arb_call * loss_arb +
+            self.w_pde_call * loss_pde +
+            self.w_bound_call * loss_bound
+        )
+      else:
+        loss_total = (
+            self.lambda_data * loss_data +
+            self.lambda_arb * loss_arb +
+            self.lambda_pde * loss_pde +
+            self.lambda_bound * loss_bound
+        )
+
+      scaled_total = loss_total * self.scaler_joint
+      scaled_total.backward()
+
+      logs['loss_call_data'] = loss_data.item()
+      logs['loss_call_bound'] = loss_bound.item()
+      logs['loss_call_pde'] = loss_pde.item()
+      logs['loss_call_arb'] = loss_arb.item()
+      logs['loss_call_total'] = loss_total.item()
+
+      return scaled_total
+
+    self.optimizer_joint_LBFGS.step(closure_call)
 
     return logs
 
@@ -582,6 +688,71 @@ class TrainSV():
       self.pde_losses.append(loss_pde)
       self.arb_losses.append(loss_arb)
       self.reg_losses.append(loss_reg)
+      self.call_losses.append(loss_call)
+
+      if not self.fixed_alpha:
+        alpha_pred = self.NN_alpha(self.dataset.x[:, 1:])
+      else:
+        alpha_pred = self.true_alpha(self.dataset.x[:, 1:])
+
+      if not self.fixed_beta:
+        beta_pred = self.NN_beta(self.dataset.x[:, 1:])
+      else:
+        beta_pred = self.true_beta(self.dataset.x[:, 1:])
+
+      alpha_error = torch.mean(torch.abs(alpha_pred - self.exact_alpha) / torch.abs(self.exact_alpha + 1e-8))
+      beta_error = torch.mean(torch.abs(beta_pred - self.exact_beta) / torch.abs(self.exact_beta + 1e-8))
+      alpha_beta_error = torch.maximum(alpha_error, beta_error)
+
+      self.alpha_errors.append(alpha_error.item())
+      self.beta_errors.append(beta_error.item())
+
+      if (epoch+1) % 100 == 0:
+        print(f'Epoch {epoch+1}')
+
+        print(f'Data loss, {loss_data}')
+        print(f'PDE loss, {loss_pde}')
+        print(f'Arbitrage loss, {loss_arb}')
+        print(f'Boundary loss, {loss_bound}')
+        print(f'Alpha error, {alpha_error}')
+        print(f'Beta error, {beta_error}')
+        print('--------------------------------------')
+
+      if loss_call < self.best_call_loss:
+        self.best_call_loss = loss_call
+        self.best_alpha_error = alpha_error
+        self.best_beta_error = beta_error
+        best_alpha_beta_error = alpha_beta_error
+        self.best_epoch = epoch
+        torch.save(self.NN_alpha.state_dict(), self.model_alpha_save_path)
+        torch.save(self.NN_beta.state_dict(), self.model_beta_save_path)
+        torch.save(self.NN_call.state_dict(), self.model_call_save_path)
+  
+  def train_single_phase_joint(self):
+    for epoch in range(self.num_epochs):
+      if (epoch + 1) % 100 == 0:
+        update_weights = True
+      else:
+        update_weights = False
+
+      if epoch / self.num_epochs < 0.9 or not self.use_LBFGS:
+          loss_data, loss_bound, loss_pde, loss_arb, loss_call = self.train_step_adam_joint(update_weights)
+      else:
+        logs = self.train_step_joint_LBFGS()
+        loss_data = logs['loss_call_data']
+        loss_bound = logs['loss_call_bound']
+        loss_pde = logs['loss_call_pde']
+        loss_arb = logs['loss_call_arb']
+        loss_call = logs['loss_call_total']
+
+      if np.isnan(loss_call).any():
+        print(f'Nan detected at epoch {epoch+1}')
+        break
+
+      self.data_losses.append(loss_data)
+      self.bound_losses.append(loss_bound)
+      self.pde_losses.append(loss_pde)
+      self.arb_losses.append(loss_arb)
       self.call_losses.append(loss_call)
 
       if not self.fixed_alpha:
@@ -997,6 +1168,9 @@ class TrainSV():
 
     if phase_type == 'Single Phase':
       self.train_single_phase()
+
+    elif phase_type == 'Single Phase Joint':
+      self.train_single_phase_joint()
 
     elif phase_type == 'Dual Phase type I':
       self.train_dual_phase_I()
