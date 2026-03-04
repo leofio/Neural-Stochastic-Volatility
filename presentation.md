@@ -30,6 +30,9 @@ d\nu_t &= \alpha_{\nu,t} dt + \beta_{\nu,t} \sqrt{\nu_t} dB_t
 \end{aligned}
 $$
 
+&nbsp;
+
+
 $$
 \langle dW_t^S, dW_t^\nu \rangle = \rho dt
 $$
@@ -90,8 +93,96 @@ $$
 $$
 
 Let $\tau = T-t$ be the time to maturity and $K$ the strike price. 
-We have $C( \lambda S, \lambda K) = \lambda C(S,K)$ so that, by Euler's Homogeneous Function Theorem $C = S \frac{\partial C}{\partial S} + K \frac{\partial C}{\partial K}$. Applying this change of variables give the following PDE.
+We have $C( \lambda S, \lambda K) = \lambda C(S,K)$ so that, by Euler's Homogeneous Function Theorem, $C = S \frac{\partial C}{\partial S} + K \frac{\partial C}{\partial K}$. Applying this change of variables gives the following PDE.
 
 $$
-\frac{\partial C}{\partial \tau} = -rK \frac{\partial C}{\partial K} + (\alpha_{\nu,t} + \rho \beta_{\nu,t} \nu) \frac{\partial C}{\partial \nu} + \frac{1}{2} \nu K^2 \frac{\partial^2 C}{\partial K^2} + \frac{1}{2}\beta_{\nu,t} ^ 2 \nu \frac{\partial^2 C}{\partial \nu^2} - \rho \beta_{\nu,t} \nu K \frac{\partial^2 C}{\partial K \partial V}
+\frac{\partial C}{\partial \tau} = -rK \frac{\partial C}{\partial K} + (\alpha_{\nu,\tau} + \rho \beta_{\nu,\tau} \nu) \frac{\partial C}{\partial \nu} + \frac{1}{2} \nu K^2 \frac{\partial^2 C}{\partial K^2} + \frac{1}{2}\beta_{\nu,\tau} ^ 2 \nu \frac{\partial^2 C}{\partial \nu^2} - \rho \beta_{\nu, \tau} \nu K \frac{\partial^2 C}{\partial K \partial V}
 $$
+
+---
+
+# Boundary Conditions
+
+The PDE has the following boundary conditions in the transformed variables.
+
+### At $\nu_\tau = 0$
+
+$-\frac{\partial C}{\partial \tau} + \alpha_{\nu = 0, \tau} C_\nu = 0$
+
+&nbsp;
+
+### At $\tau = 0$
+
+$C = \max(S_0 - K, 0)$
+
+---
+
+# Arbitrage free surface
+
+Real world finiancial markets must be arbitrage free, this can be enforced by the following conditions.
+
+$$
+\frac{\partial C}{\partial \tau} \geq 0
+$$
+
+$$
+\frac{\partial ^2 C}{\partial K^2} \geq 0
+$$
+
+---
+
+# Inverse PINNs
+
+Inverse PINNs are used in scientific deep learning to recover unkown parameters or functions from a dynamical sysmtem. The inverse PINN simultaneously reconstructs the full solution field and discovers those unknown physical parameters.
+
+## Procedure
+
+$C$, $\alpha_{\nu,\tau}$ and $\beta_{\nu,\tau}$ are all modeled with neural networks. $C$ fits the data and PDE loss, then $\alpha_{\nu,\tau}$ and $\beta_{\nu,\tau}$ are recovered via the PDE loss.
+
+---
+
+# Scaling
+
+Scaling varibales is improtant for two reasons;
+  * It can help simplify the PDE
+  * The neural networks should take scaled inputs for improved results
+
+$$
+t = \frac{\tau}{\tau_{max}}, u = \ln \left( \frac {e^{-r\tau} K}{K_{max}} \right)
+$$
+
+The PDE becomes
+
+$$
+\frac{1}{\tau_{max}} \frac{\partial C}{\partial t} = \frac{1}{2} \nu (\frac{\partial^2 C}{\partial u^2} - \frac{\partial C}{\partial u}) - \rho \beta \nu \frac{\partial^2 C}{\partial u \partial v} + \frac{1}{2} \beta^2 \nu \frac{\partial^2 C}{\partial v^2} + (\alpha + \rho \beta \nu) \frac{\partial C}{\partial \nu}
+$$
+
+---
+
+# Networks
+
+## Call option surface
+
+$$
+C(u, t, \nu) = S_0 \mathcal{N}_{call}(u, t, \nu)
+$$
+
+4 hidden layers each with 64 neurons
+
+## Alpha and Beta
+
+$$
+\alpha_{t, \nu} = \mathcal{N}_{alpha}(t, \nu)
+$$
+
+$$
+\beta_{t, \nu} = \mathcal{N}_{beta}(t, \nu)
+$$
+
+2 hidden layers each with 10 neurons
+
+---
+
+# Losses
+
+The overal loss for the PINN 
