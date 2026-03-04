@@ -30,9 +30,6 @@ d\nu_t &= \alpha_{\nu,t} dt + \beta_{\nu,t} \sqrt{\nu_t} dB_t
 \end{aligned}
 $$
 
-&nbsp;
-
-
 $$
 \langle dW_t^S, dW_t^\nu \rangle = \rho dt
 $$
