@@ -185,4 +185,28 @@ $$
 
 # Losses
 
-The overal loss for the PINN 
+The overal loss for the PINN is split into four terms that each enforce a desired behaviour.
+
+$$
+\mathcal{L}_{total} = \lambda_{data}\mathcal{L}_{data} + \lambda_{pde}\mathcal{L}_{pde} + \lambda_{bound}\mathcal{L}_{bound} + \lambda_{arb}\mathcal{L}_{arb} 
+$$
+
+$$
+\mathcal{L}_{data} = \frac{1}{N} \sum_{i=1}^{N} (S_0 \mathcal{N}_{call}(u_i, t_i, \nu_i) - C_i)^2
+\quad
+\mathcal{L}_{pde} = \frac{1}{M_1} \sum_{i=1}^{M_1} f_{pde}(u_i, t_i, \nu_i)
+$$
+
+$$
+\mathcal{L}_{bound} = \frac{1}{M_2} \sum_{i=1}^{M_2} f_{bound}(u_i, t_i, \nu_i)
+\quad
+\mathcal{L}_{arb} = \frac{1}{M_3} \sum_{i=1}^{M_3} f_{arb}(u_i, t_i, \nu_i)
+$$
+
+Where $f_{pde}, f_{bound}$ are the residuals we need to minimize, $f_{arb}$ penalizes the arbitrage conditionds, $M_1, M_2, M_3$ are the number of collocation points sampled, $\lambda_{data}, \lambda_{pde}, \lambda_{bound}, \lambda_{arb}$ are scaling weights.
+
+---
+
+# Loss weighting
+
+The choice of $\lambda_i$ is important in the training of the PINN. I implemented and adaptive loss weighting system to improve training.
