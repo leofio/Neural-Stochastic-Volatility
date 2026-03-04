@@ -29,6 +29,7 @@ dS_t &= r S_t dt + \sqrt{\nu_t} S_t dW_t \\
 d\nu_t &= \alpha_{\nu,t} dt + \beta_{\nu,t} \sqrt{\nu_t} dB_t
 \end{aligned}
 $$
+
 &nbsp;
 
 
