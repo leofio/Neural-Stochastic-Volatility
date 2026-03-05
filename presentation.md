@@ -209,4 +209,43 @@ Where $f_{pde}, f_{bound}$ are the residuals we need to minimize, $f_{arb}$ pena
 
 # Loss weighting
 
+The choice of $\lambda_i$ is important in the training of the PINN. I implemented an adaptive loss weighting system to improve training.
+
+$$
+\hat{\lambda}_{i} = \frac{\sum_{j=1}^{4}\|\nabla_{\theta}\mathcal{L}_{j}(\theta)\|}{\|\nabla_{\theta}\mathcal{L}_{i}(\theta)\| + \epsilon},
+$$
+
+$$
+\lambda_{new} = \alpha \lambda_{old} + (1-\alpha) \hat{\lambda}_{new}
+$$
+
+Weights are updataed every 100 epochs with $\alpha = 0.9$. Weights are clamped to $100$ and $\epsilon = 1e-8$ to stop the weights exploding. 
+
+---
+
+# Training
+
+I tested four different training strategies.
+
+1. **Single Phase** : The three networks are optimized in turn with a coordinate decent algorithm, first with Adam then with LBFGS
+2. **Single Phase Joint** : The three networks are optimized jointly with respect to the total loss, first with Adam then with LBFGS
+3. **Dual Phase type I** : In the first phase all three networks are optimized with coordinate descent then, once the data loss falls below a set tolerance, the solution surface is held fixed and only $\alpha_{\nu,t}$ and $\beta_{\nu,t}$ are optimized
+4. **Dual Phase type II** : In the fisrt phase only the call suface is fit with respect to just the data loss then it is held fixed and $\alpha_{\nu,t}$ and $\beta_{\nu,t}$ are optimized. This is not good practice but is included to show the importance of the PDE loss.
+
+---
+
+# References
+
+- **Wang, Z., Shaa, A., Privault, N., & Guet, C. (2021).** *Deep self-consistent learning of local volatility.* arXiv preprint arXiv:2201.07880. [https://doi.org/10.48550/arXiv.2201.07880](https://doi.org/10.48550/arXiv.2201.07880)
+
+- **Gatheral, J. (2006).** *The Volatility Surface: A Practitioner's Guide.* John Wiley & Sons. ISBN: 978-0-471-79251-2.
+
+- **Zhou, W., & Xu, Y. F. (2021).** *Data-Guided Physics-Informed Neural Networks for Solving Inverse Problems in Partial Differential Equations.* arXiv preprint arXiv:2104.05386. [https://doi.org/10.48550/arXiv.2104.05386](https://doi.org/10.48550/arXiv.2104.05386)
+
+- **Wang, S., Sankaran, S., Wang, H., & Perdikaris, P. (2023).** *An Expert's Guide to Training Physics-Informed Neural Networks.* arXiv preprint arXiv:2308.08468. [https://doi.org/10.48550/arXiv.2308.08468](https://doi.org/10.48550/arXiv.2308.08468)
+
+---
+
+# Loss weighting
+
 The choice of $\lambda_i$ is important in the training of the PINN. I implemented and adaptive loss weighting system to improve training.
