@@ -131,6 +131,44 @@ $$
 
 ---
 
+<style scoped>
+section {
+  font-size: 24px;
+}
+</style>
+
+# Theoretical Identifiabilty 
+
+$\alpha_{t, \nu}$ and $\beta_{t, \nu}$ are taken to be independent of $K$ because this provides theoretical uniqueness of $\alpha_{t, \nu}$, given a solution $C$.
+
+### Proof
+
+Write
+
+$$
+\small
+F(\tau, K, \nu) = -\frac{\partial C}{\partial \tau} -rK \frac{\partial C}{\partial K} + \frac{1}{2} \nu K^2 \frac{\partial^2 C}{\partial K^2}
+$$
+
+then
+
+$$
+\small
+ F(\tau, K ,\nu) + (\alpha_{\nu,\tau} + \rho \beta_{\nu,\tau} \nu) \frac{\partial C}{\partial \nu} + \frac{1}{2}\beta_{\nu,\tau} ^ 2 \nu \frac{\partial^2 C}{\partial \nu^2} - \rho \beta_{\nu, \tau} \nu K \frac{\partial^2 C}{\partial K \partial V} = 0\\
+ $$
+
+and, by independece from K,
+
+$$
+\small
+ \frac{\partial F}{\partial K} + (\alpha_{\nu,\tau} + \rho \beta_{\nu,\tau} \nu) \frac{\partial ^2 C}{\partial \nu \partial K} + \frac{1}{2}\beta_{\nu,\tau} ^ 2 \nu \frac{\partial^3 C}{\partial \nu^2 \partial K} - \rho \beta_{\nu, \tau} \nu K \frac{\partial^3 C}{\partial K^2 \partial V} = 0
+$$
+
+This gives two equations for $\alpha_{t, \nu}$ and $\beta_{t, \nu}$ that, with the convention $\beta_{t, \nu} \geq 0$, determine $\alpha_{t, \nu}$ and $\beta_{t, \nu}$.
+
+
+---
+
 # Inverse PINNs
 
 Inverse PINNs are used in scientific deep learning to recover unkown parameters or functions from a dynamical sysmtem. The inverse PINN simultaneously reconstructs the full solution field and discovers those unknown physical parameters.
@@ -223,6 +261,32 @@ Weights are updataed every 100 epochs with $\alpha = 0.9$. Weights are clamped t
 
 ---
 
+# Data generation
+
+I generated synthetic option price data using Monte Carlo simulation with known models.
+
+#### Heston model
+$$
+\small
+\begin{aligned}
+dS_t &= \mu S_t dt + \sqrt{v_t} S_t dW_t^S \\
+dv_t &= \kappa(\theta - v_t)dt + \sigma \sqrt{v_t} dW_t^v
+\end{aligned}
+$$
+
+#### 3/2 model
+$$
+\small
+\begin{aligned}
+dS_t &= \mu S_t dt + \sqrt{v_t} S_t dW_t^S \\
+dv_t &= \kappa v_t (\theta - v_t) dt + \sigma v_t^{3/2} dW_t^v
+\end{aligned}
+$$
+
+![w:500](images/asset_trajectories.png) ![w:500](images/volatility_trajectories.png)
+
+---
+
 # Training
 
 I tested four different training strategies.
@@ -231,6 +295,33 @@ I tested four different training strategies.
 2. **Single Phase Joint** : The three networks are optimized jointly with respect to the total loss, first with Adam then with LBFGS
 3. **Dual Phase type I** : In the first phase all three networks are optimized with coordinate descent then, once the data loss falls below a set tolerance, the solution surface is held fixed and only $\alpha_{\nu,t}$ and $\beta_{\nu,t}$ are optimized
 4. **Dual Phase type II** : In the fisrt phase only the call suface is fit with respect to just the data loss then it is held fixed and $\alpha_{\nu,t}$ and $\beta_{\nu,t}$ are optimized. This is not good practice but is included to show the importance of the PDE loss.
+
+---
+
+# Heston Results - beta fixed
+
+![h:500 w:](images/epochs_plot_heston_new.png)
+
+![bg right vertical h:300](images/alpha_plot_heston_new.png)
+![bg right vertical h:300](images/call_price_plot_heston_new.png)
+
+---
+
+# Heston Results alpha and beta unknown
+
+![h:500 w:](images/call_price_plot_fixed_strike_mixed_heston.png)
+
+![bg right vertical h:300](images/alpha_surface_plot_mixed_heston.png)
+![bg right vertical h:300](images/beta_plot_mixed_heston.png)
+
+---
+
+# 3/2 model results
+
+![h:500 w:](images/call_price_plot_fixed_strike_three_two.png)
+
+![bg right vertical h:300](images/alpha_surface_plot_three_two.png)
+![bg right vertical h:300](images/beta_surface_plot_three_two.png)
 
 ---
 
@@ -243,9 +334,3 @@ I tested four different training strategies.
 - **Zhou, W., & Xu, Y. F. (2021).** *Data-Guided Physics-Informed Neural Networks for Solving Inverse Problems in Partial Differential Equations.* arXiv preprint arXiv:2104.05386. [https://doi.org/10.48550/arXiv.2104.05386](https://doi.org/10.48550/arXiv.2104.05386)
 
 - **Wang, S., Sankaran, S., Wang, H., & Perdikaris, P. (2023).** *An Expert's Guide to Training Physics-Informed Neural Networks.* arXiv preprint arXiv:2308.08468. [https://doi.org/10.48550/arXiv.2308.08468](https://doi.org/10.48550/arXiv.2308.08468)
-
----
-
-# Loss weighting
-
-The choice of $\lambda_i$ is important in the training of the PINN. I implemented and adaptive loss weighting system to improve training.
