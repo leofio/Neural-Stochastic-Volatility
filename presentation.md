@@ -325,6 +325,26 @@ I tested four different training strategies.
 
 ---
 
+# Fisher Information Matrix
+
+Although theoretically identifiable, in practice we do not have a perfect solution surface. To test this we use the empiriacl Fisher Information Matrix.
+
+$$
+\hat{\mathcal{I}}(\theta) = \frac{1}{N} \sum_{i=1}^{N} \nabla_\theta f_{pde}(u_i, t_i, v_i; \theta) \nabla_\theta f_{PDE}(u_i, t_i, v_i; \theta)^T
+$$
+
+When calculated for $\alpha_{\nu,t}$ and $\beta_{\nu,t}$ the matrix is very poorly conditioned (many $0$ eigenvalues), this shows very poor local identifiablility.
+Reasons for poor identifiability include:
+* Imperfect solution surface
+* Overparametrized networks
+* Compensation in the solution surface for incorret $\alpha_{\nu,t}$ and $\beta_{\nu,t}$
+
+---
+
+# Real world data
+
+---
+
 # References
 
 - **Wang, Z., Shaa, A., Privault, N., & Guet, C. (2021).** *Deep self-consistent learning of local volatility.* arXiv preprint arXiv:2201.07880. [https://doi.org/10.48550/arXiv.2201.07880](https://doi.org/10.48550/arXiv.2201.07880)
