@@ -73,7 +73,7 @@ class TrainSV():
         joint_params += list(self.NN_alpha.parameters())
       if not self.fixed_beta:
         joint_params += list(self.NN_beta.parameters())
-            
+
       self.optimizer_joint_LBFGS = torch.optim.LBFGS(joint_params, lr=0.1, line_search_fn='strong_wolfe')
 
     self.use_scheduler = use_scheduler
@@ -561,21 +561,21 @@ class TrainSV():
     loss_data = self.loss_data()
     loss_bound = self.loss_bound()
     loss_pde, loss_arb, _ = self.loss_pde()
-      
+
     if update_weights:
       params = list(self.NN_call.parameters())
       if not self.fixed_alpha:
         params += list(self.NN_alpha.parameters())
       if not self.fixed_beta:
         params += list(self.NN_beta.parameters())
-      
+
       weights_tilde = self.get_adaptive_weights([loss_pde, loss_bound, loss_data, loss_arb], params)
-      
+
       self.w_pde_call = 0.9 * self.w_pde_call + 0.1 * weights_tilde[0]
       self.w_bound_call = 0.9 * self.w_bound_call + 0.1 * weights_tilde[1]
       self.w_data_call = 0.9 * self.w_data_call + 0.1 * weights_tilde[2]
       self.w_arb_call = 0.9 * self.w_arb_call + 0.1 * weights_tilde[3]
-    
+
     if self.use_adaptive_loss_weights:
       loss_total = (
           self.w_data_call * loss_data +
@@ -590,7 +590,7 @@ class TrainSV():
           self.lambda_pde * loss_pde +
           self.lambda_bound * loss_bound
       )
-    
+
     loss_total.backward()
 
     for group in self.optimizer_NN_call_Adam.param_groups:
@@ -615,7 +615,7 @@ class TrainSV():
         self.sched_beta_phase_1.step(loss_total.item())
 
     return loss_data.item(), loss_bound.item(), loss_pde.item(), loss_arb.item(), loss_total.item()
-  
+
   def train_step_joint_LBFGS(self):
 
     logs = {}
@@ -727,7 +727,7 @@ class TrainSV():
         torch.save(self.NN_alpha.state_dict(), self.model_alpha_save_path)
         torch.save(self.NN_beta.state_dict(), self.model_beta_save_path)
         torch.save(self.NN_call.state_dict(), self.model_call_save_path)
-  
+
   def train_single_phase_joint(self):
     for epoch in range(self.num_epochs):
       if (epoch + 1) % 100 == 0:
@@ -1085,8 +1085,11 @@ class TrainSV():
             offset += num
 
     u_samples = -self.u_min * torch.rand((num_samples, 1), device=self.device) + self.u_min
-    t_samples = torch.rand((num_samples, 1), device=self.device)
-    v_samples = (self.v_max - self.v_min) * torch.rand((num_samples, 1), device=self.device) + self.v_min
+    t_raw = torch.distributions.Beta(0.5, 2.0).sample((num_samples, 1)).to(self.device)
+    t_samples = t_raw
+    v_raw = torch.distributions.Beta(0.5, 0.5).sample((num_samples, 1)).to(self.device)
+    v_samples = v_raw * (self.v_max - self.v_min) + self.v_min
+
 
     u_samples.requires_grad = True
     t_samples.requires_grad = True

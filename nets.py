@@ -43,7 +43,13 @@ class NetAlpha(nn.Module):
         layers.append(activation())
         layers.append(nn.Linear(neurons_per_layer[-1], output_size))
         self.layers = nn.Sequential(*layers)
-        nn.init.constant_(self.layers[-1].bias, 0)
+
+    def _init_weights(self):
+        for m in self.layers:
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_normal_(m.weight, gain=0.5)
+                nn.init.zeros_(m.bias)
+        nn.init.constant_(self.layers[-1].bias, 0.1)
 
     def forward(self, x):
         return self.layers(x)
@@ -64,6 +70,13 @@ class NetBeta(nn.Module):
         layers.append(activation())
         layers.append(nn.Linear(neurons_per_layer[-1], output_size))
         self.layers = nn.Sequential(*layers)
+
+    def _init_weights(self):
+        for m in self.layers:
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_normal_(m.weight, gain=1.0)
+                nn.init.zeros_(m.bias)
+        nn.init.constant_(self.layers[-1].bias, 0.5)
 
     def forward(self, x):
         return self.layers(x)
