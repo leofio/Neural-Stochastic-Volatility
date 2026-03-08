@@ -10,6 +10,8 @@ A neural network implementation for calibrating stochastic volatility models usi
   * **Single Phase Joint** : The three networks are optimized jointly with respect to the total loss, first with Adam then with LBFGS
   * **Dual Phase type I** : In the first phase all three networks are optimized with coordinate descent then, once the data loss falls below a set tolerance, the solution surface is held fixed and only $\alpha_{\nu,t}$ and $\beta_{\nu,t}$ are optimized
   * **Dual Phase type II** : In the fisrt phase only the call suface is fit with respect to just the data loss then it is held fixed and $\alpha_{\nu,t}$ and $\beta_{\nu,t}$ are optimized. This is not good practice but is included to show the importance of the PDE loss.
+* **CallSurfaceRepriceError** : Calculates the error in the Call Option price surface from the data.
+* **MCRepriceError** : Using learned $\alpha_{\nu,t}$ and $\beta_{\nu,t}$ calculates option prices with Monte Carlo simulation and finds the repricing error.
 
 ## Project overview
 Inspired by the work of Wang et al. [2025] on Deep self-consistent learning of local volatility, this repository extends that approach to Stochastic Volatility (SV) models. This requires handling additional latent parameters and more complex state dynamics in the synthetic data generation phase. Similarly, I used physics informed neural networks (PINNs) to learn a consistent pricing surface and the underlying asset and volatility dynamics.
