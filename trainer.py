@@ -1170,7 +1170,7 @@ class TrainSV():
               +(self.q - 0.5 * v_i) * g_u
               - self.rho * b_p * v_i * g_uv
               + 0.5 * v_i * (b_p ** 2) * g_vv
-              + (a_p + self.rho * b_p * v_rand) * g_v
+              + (a_p + self.rho * b_p * v_i) * g_v
               - self.q * call_p
           )
 
