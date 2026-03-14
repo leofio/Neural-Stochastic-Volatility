@@ -120,15 +120,18 @@ class TrainSV():
     v_lower_bound = 0.005
     v_upper_bound = 1.5
 
-    t_zeros = torch.zeros((128,1), dtype = torch.float32).to(self.device)
-    v_zeros = torch.zeros((128,1), dtype = torch.float32, requires_grad = True).to(self.device)
+    t_zeros = torch.zeros((1024,1), dtype = torch.float32, device=self.device)
+    v_zeros = torch.zeros((1024,1), dtype = torch.float32,  device=self.device)
+
     u_rand = (u_upper_bound - u_lower_bound) * torch.rand((1024, 1), dtype=torch.float32, device=self.device) + u_lower_bound
-    t_rand = torch.rand((128,1), dtype = torch.float32, device = self.device)
-    v_rand = (v_upper_bound - v_lower_bound) * torch.rand((1024,1), dtype = torch.float32, device = self.device) + v_lower_bound
+    t_rand = torch.rand((1024,1), dtype=torch.float32, device=self.device)
+    v_rand = (v_upper_bound - v_lower_bound) * torch.rand((1024,1), dtype=torch.float32, device=self.device) + v_lower_bound
 
     t_rand.requires_grad = True
     u_rand.requires_grad = True
     v_rand.requires_grad = True
+    v_zeros.requires_grad = True
+    t_zeros.requires_grad = True
 
     x_rand_t0 = torch.cat((u_rand, t_zeros, v_rand), dim = 1)
 
@@ -149,9 +152,9 @@ class TrainSV():
     u_lower_bound = -3.0
     u_upper_bound = 3.0
     
-    v_zeros = torch.zeros((1024,1), dtype = torch.float32, requires_grad = True).to(self.device)
+    v_zeros = torch.zeros((1024,1), dtype=torch.float32, device=self.device)
     u_rand = (u_upper_bound - u_lower_bound) * torch.rand((1024, 1), dtype=torch.float32, device=self.device) + u_lower_bound
-    t_rand = torch.rand((1024,1), dtype = torch.float32, device = self.device, requires_grad= True)
+    t_rand = torch.rand((1024,1), dtype=torch.float32, device=self.device)
 
     u_rand.requires_grad = True
     t_rand.requires_grad = True
