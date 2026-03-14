@@ -6,9 +6,10 @@ import matplotlib.pyplot as plt
 from matplotlib.ticker import MaxNLocator
 
 class TrainSV():
-  def __init__(self, S_0, r, rho, nn_params, nn_call_params, tol, df, loss_weights, num_epochs, learning_rate, device, fixed_alpha = False, fixed_beta = False, use_adaptive_loss_weights=False, weight_decay = 0, use_scheduler = False, use_LBFGS = False):
+  def __init__(self, S_0, r, q, rho, nn_params, nn_call_params, tol, df, loss_weights, num_epochs, learning_rate, device, fixed_alpha = False, fixed_beta = False, use_adaptive_loss_weights=False, weight_decay = 0, use_scheduler = False, use_LBFGS = False):
     self.S_0 = S_0
     self.r =  r
+    self.q = q
     self.rho = rho
     self.tol = tol
     self.df = df
@@ -114,13 +115,20 @@ class TrainSV():
     return loss_data
 
   def loss_bound_fixed(self):
+    u_lower_bound = -3.0
+    u_upper_bound = 3.0
+    v_lower_bound = 0.005
+    v_upper_bound = 1.5
+
     t_zeros = torch.zeros((128,1), dtype = torch.float32).to(self.device)
     v_zeros = torch.zeros((128,1), dtype = torch.float32, requires_grad = True).to(self.device)
-    u_rand = -self.u_min * torch.rand((128,1), dtype = torch.float32, device = self.device) + self.u_min
+    u_rand = (u_upper_bound - u_lower_bound) * torch.rand((1024, 1), dtype=torch.float32, device=self.device) + u_lower_bound
     t_rand = torch.rand((128,1), dtype = torch.float32, device = self.device)
-    v_rand = (self.v_max - self.v_min) * torch.rand((128,1), dtype = torch.float32, device = self.device) + self.v_min
+    v_rand = (v_upper_bound - v_lower_bound) * torch.rand((1024,1), dtype = torch.float32, device = self.device) + v_lower_bound
 
     t_rand.requires_grad = True
+    u_rand.requires_grad = True
+    v_rand.requires_grad = True
 
     x_rand_t0 = torch.cat((u_rand, t_zeros, v_rand), dim = 1)
 
@@ -137,9 +145,17 @@ class TrainSV():
   def loss_bound_flow(self, seed = None):
     if seed is not None:
       torch.manual_seed(seed)
-    v_zeros = torch.zeros((128,1), dtype = torch.float32, requires_grad = True).to(self.device)
-    u_rand = -self.u_min * torch.rand((128,1), dtype = torch.float32, device = self.device, requires_grad=True) + self.u_min
-    t_rand = torch.rand((128,1), dtype = torch.float32, device = self.device, requires_grad= True)
+
+    u_lower_bound = -3.0
+    u_upper_bound = 3.0
+    
+    v_zeros = torch.zeros((1024,1), dtype = torch.float32, requires_grad = True).to(self.device)
+    u_rand = (u_upper_bound - u_lower_bound) * torch.rand((1024, 1), dtype=torch.float32, device=self.device) + u_lower_bound
+    t_rand = torch.rand((1024,1), dtype = torch.float32, device = self.device, requires_grad= True)
+
+    u_rand.requires_grad = True
+    t_rand.requires_grad = True
+    v_zeros.requires_grad = True
 
     x_rand_v0 = torch.cat((u_rand, t_rand, v_zeros), dim = 1)
     net_input_rand_v0 = torch.cat((t_rand, v_zeros), dim = 1)
@@ -166,14 +182,20 @@ class TrainSV():
   def loss_pde(self, seed = None):
     if seed is not None:
       torch.manual_seed(seed)
+
+    u_lower_bound = -4.0
+    u_upper_bound = 4.0
+    v_lower_bound = 0.005
+    v_upper_bound = 1.5
+
     t_anchored = torch.zeros((256,1), dtype = torch.float32, device = self.device)
     u_anchored = torch.zeros((256,1), dtype = torch.float32, device = self.device)
     v_anchored_0 = torch.zeros((128,1), dtype = torch.float32, device = self.device)
     v_anchored_1 = torch.full((128,1), self.v_max, dtype = torch.float32, device = self.device)
 
-    u_rand_bulk = -self.u_min * torch.rand((64**2,1), dtype = torch.float32, device = self.device) + self.u_min
-    t_rand_bulk = torch.rand((64**2, 1), dtype=torch.float32).to(self.device)
-    v_rand_bulk = torch.tensor(self.v_max - self.v_min) * torch.rand((64**2,1), dtype = torch.float32, device = self.device) + torch.tensor(self.v_min)
+    u_rand_bulk = (u_upper_bound - u_lower_bound) * torch.rand((8192, 1), dtype=torch.float32, device=self.device) + u_lower_bound
+    t_rand_bulk = torch.rand((8192, 1), dtype=torch.float32).to(self.device)
+    v_rand_bulk = (v_upper_bound - v_lower_bound) * torch.rand((8192, 1), dtype=torch.float32, device=self.device) + v_lower_bound
 
     t_rand = torch.cat([t_anchored, t_rand_bulk], dim=0).to(self.device)
     u_rand = torch.cat([u_anchored, u_rand_bulk], dim=0).to(self.device)
@@ -205,13 +227,24 @@ class TrainSV():
     grad_pred_vv = torch.autograd.grad(grad_pred_v, v_rand, grad_outputs=torch.ones_like(grad_pred_v), create_graph=True)[0]
     grad_pred_uv = torch.autograd.grad(grad_pred_u, v_rand, grad_outputs=torch.ones_like(grad_pred_u), create_graph=True)[0]
 
-    f_pde = (
-        - (1.0 / self.T_max) * grad_pred_t
-        + 0.5 * v_rand * (grad_pred_uu - grad_pred_u)
-        - self.rho * beta_pred * v_rand * grad_pred_uv
-        + 0.5 * v_rand * (beta_pred ** 2) * grad_pred_vv
-        + (alpha_pred + self.rho * beta_pred * v_rand) * grad_pred_v
-    )
+    if self.q is None:
+      f_pde = (
+          - (1.0 / self.T_max) * grad_pred_t
+          + 0.5 * v_rand * (grad_pred_uu - grad_pred_u)
+          - self.rho * beta_pred * v_rand * grad_pred_uv
+          + 0.5 * v_rand * (beta_pred ** 2) * grad_pred_vv
+          + (alpha_pred + self.rho * beta_pred * v_rand) * grad_pred_v
+      )
+    else:
+      f_pde = (
+          - (1.0 / self.T_max) * grad_pred_t
+          + 0.5 * v_rand * grad_pred_uu
+          +(self.q - 0.5 * v_rand) * grad_pred_u
+          - self.rho * beta_pred * v_rand * grad_pred_uv
+          + 0.5 * v_rand * (beta_pred ** 2) * grad_pred_vv
+          + (alpha_pred + self.rho * beta_pred * v_rand) * grad_pred_v
+          - self.q * call_pred
+      )
 
     f_arb_1 = grad_pred_t - self.r * self.T_max * grad_pred_u
     f_arb_2 = grad_pred_uu - grad_pred_u
@@ -249,7 +282,7 @@ class TrainSV():
         if total_norm == 0.0:
           return [torch.tensor(1.0).to(self.device) for _ in losses]
 
-        weights = [torch.clamp((total_norm / (n + 1e-8)).detach(), max=100.0) for n in norms]
+        weights = [torch.clamp((0.25 * total_norm / (n + 1e-8)).detach(), max=100.0) for n in norms]
 
         return weights
 
@@ -1118,6 +1151,27 @@ class TrainSV():
         + 0.5 * v_i * (b_p ** 2) * g_vv
         + (a_p + self.rho * b_p * v_i) * g_v
     )
+
+        if self.q is None:
+          f_pde = (
+              - (1.0 / self.T_max) * g_t
+              + 0.5 * v_i * (g_uu - g_uv)
+              - self.rho * b_p * v_i * g_uv
+              + 0.5 * v_i * (b_p ** 2) * g_uv
+              + (a_p + self.rho * b_p * v_i) * g_v
+          )
+        else:
+          f_pde = (
+              - (1.0 / self.T_max) * g_t
+              + 0.5 * v_i * g_uu
+              +(self.q - 0.5 * v_i) * g_u
+              - self.rho * b_p * v_i * g_uv
+              + 0.5 * v_i * (b_p ** 2) * g_vv
+              + (a_p + self.rho * b_p * v_rand) * g_v
+              - self.q * call_p
+          )
+
+
 
         if not self.fixed_alpha: self.NN_alpha.zero_grad()
         if not self.fixed_beta: self.NN_beta.zero_grad()
